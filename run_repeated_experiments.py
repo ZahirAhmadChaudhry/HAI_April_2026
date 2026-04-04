@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import subprocess
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,6 +59,8 @@ START_SEED = 43
 END_SEED = 62
 N_TRIALS = 50
 THRESHOLD = 0.5
+
+NUM_THREADS = max(1, int(os.environ.get("HAI_NUM_THREADS", os.cpu_count() or 1)))
 
 ALGORITHMS = ["xgboost", "lightgbm", "catboost", "random_forest"]
 CATEGORICAL_COLUMNS = [
@@ -119,6 +123,28 @@ FEATURE_GROUPS = {
         "total_staffing_count",
     },
 }
+
+
+def detect_gpu_available() -> tuple[bool, str]:
+    flag = os.environ.get("HAI_USE_GPU", "").strip().lower()
+    if flag in {"0", "false", "no", "off"}:
+        return False, "disabled by HAI_USE_GPU"
+
+    try:
+        probe = subprocess.run(["nvidia-smi", "-L"], capture_output=True, text=True, check=False)
+        if probe.returncode == 0 and "GPU" in (probe.stdout or ""):
+            first_line = (probe.stdout or "").strip().splitlines()[0]
+            return True, first_line
+    except Exception:
+        pass
+
+    if flag in {"1", "true", "yes", "on"}:
+        return True, "forced by HAI_USE_GPU"
+
+    return False, "no GPU detected"
+
+
+USE_GPU, GPU_REASON = detect_gpu_available()
 
 
 # ============================================================
@@ -337,12 +363,18 @@ def sample_params(trial: optuna.trial.Trial, algorithm: str) -> dict[str, Any]:
 
 def make_model(algorithm: str, params: dict[str, Any], seed: int):
     if algorithm == "xgboost":
+        xgb_kwargs = {
+            "objective": "binary:logistic",
+            "eval_metric": "auc",
+            "random_state": seed,
+            "n_jobs": NUM_THREADS,
+            "tree_method": "hist",
+        }
+        if USE_GPU:
+            xgb_kwargs["device"] = "cuda"
+
         return XGBClassifier(
-            objective="binary:logistic",
-            eval_metric="auc",
-            random_state=seed,
-            n_jobs=-1,
-            tree_method="hist",
+            **xgb_kwargs,
             **params,
         )
 
@@ -350,22 +382,30 @@ def make_model(algorithm: str, params: dict[str, Any], seed: int):
         return LGBMClassifier(
             objective="binary",
             random_state=seed,
-            n_jobs=-1,
+            n_jobs=NUM_THREADS,
             verbose=-1,
             **params,
         )
 
     if algorithm == "catboost":
+        cat_kwargs = {
+            "loss_function": "Logloss",
+            "eval_metric": "AUC",
+            "random_seed": seed,
+            "verbose": False,
+            "thread_count": NUM_THREADS,
+        }
+        if USE_GPU:
+            cat_kwargs["task_type"] = "GPU"
+            cat_kwargs["devices"] = os.environ.get("HAI_GPU_DEVICES", "0")
+
         return CatBoostClassifier(
-            loss_function="Logloss",
-            eval_metric="AUC",
-            random_seed=seed,
-            verbose=False,
+            **cat_kwargs,
             **params,
         )
 
     if algorithm == "random_forest":
-        return RandomForestClassifier(random_state=seed, n_jobs=-1, **params)
+        return RandomForestClassifier(random_state=seed, n_jobs=NUM_THREADS, **params)
 
     raise ValueError(f"Unsupported algorithm: {algorithm}")
 
@@ -378,29 +418,62 @@ def fit_for_algorithm(
     X_val: pd.DataFrame | None = None,
     y_val: pd.Series | None = None,
 ) -> Any:
-    if algorithm == "lightgbm" and X_val is not None and y_val is not None:
-        model.fit(
-            X_train,
-            y_train,
-            eval_set=[(X_val, y_val)],
-            eval_metric="auc",
-            callbacks=[lgb.early_stopping(stopping_rounds=25, verbose=False)],
-        )
-        return model
+    try:
+        if algorithm == "lightgbm" and X_val is not None and y_val is not None:
+            model.fit(
+                X_train,
+                y_train,
+                eval_set=[(X_val, y_val)],
+                eval_metric="auc",
+                callbacks=[lgb.early_stopping(stopping_rounds=25, verbose=False)],
+            )
+            return model
 
-    if algorithm == "catboost" and X_val is not None and y_val is not None:
-        model.fit(
-            X_train,
-            y_train,
-            eval_set=(X_val, y_val),
-            use_best_model=True,
-            early_stopping_rounds=25,
-            verbose=False,
-        )
-        return model
+        if algorithm == "catboost" and X_val is not None and y_val is not None:
+            model.fit(
+                X_train,
+                y_train,
+                eval_set=(X_val, y_val),
+                use_best_model=True,
+                early_stopping_rounds=25,
+                verbose=False,
+            )
+            return model
 
-    model.fit(X_train, y_train)
-    return model
+        model.fit(X_train, y_train)
+        return model
+    except Exception as exc:
+        # If GPU setup fails, transparently fall back to CPU for robustness.
+        if algorithm == "xgboost" and USE_GPU:
+            print(f"XGBoost GPU fit failed, falling back to CPU. Reason: {exc}")
+            model.set_params(device="cpu")
+            model.fit(X_train, y_train)
+            return model
+
+        if algorithm == "catboost" and USE_GPU:
+            print(f"CatBoost GPU fit failed, falling back to CPU. Reason: {exc}")
+            model.set_params(task_type="CPU")
+            if X_val is not None and y_val is not None:
+                model.fit(
+                    X_train,
+                    y_train,
+                    eval_set=(X_val, y_val),
+                    use_best_model=True,
+                    early_stopping_rounds=25,
+                    verbose=False,
+                )
+            else:
+                model.fit(X_train, y_train)
+            return model
+
+        raise
+
+
+def print_compute_config() -> None:
+    print(
+        "Compute config: "
+        f"NUM_THREADS={NUM_THREADS}, USE_GPU={USE_GPU}, GPU_INFO={GPU_REASON}"
+    )
 
 
 def cv_auc_leave_one_year_out(
@@ -1064,6 +1137,7 @@ def main() -> int:
 
     configure_plots()
     ensure_dirs()
+    print_compute_config()
 
     if not INPUT_DATASET.exists():
         raise FileNotFoundError(f"Missing dataset: {INPUT_DATASET}")

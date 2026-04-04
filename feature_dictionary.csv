@@ -1,0 +1,45 @@
+column_name,description,data_type,value_range,n_missing,n_unique,category
+age,Patient age (years),int64,19 .. 89,0,66,patient_demographics
+sex,"Patient sex (1=M, 2=F, 3=other)",Int64,1 .. 3,0,3,patient_demographics
+admission_origin,Patient origin before ICU (1-9),Int64,1 .. 9,0,9,patient_demographics
+diagnostic_category,Medical/surgical classification,Int64,1 .. 9,0,4,clinical_severity
+trauma_status,Trauma patient status,Int64,1 .. 9,0,3,clinical_severity
+immunosuppression,Immunosuppression status,Int64,1 .. 9,0,4,clinical_severity
+antibiotic_at_admission,Antibiotic use at admission,Int64,1 .. 9,0,3,medical_procedures
+cancer_status,Cancer status,Int64,1 .. 9,0,4,clinical_severity
+severity_score_igs2,IGS II severity score,float64,1 .. 101,4,78,clinical_severity
+intubation_status,Intubation during stay,Int64,1 .. 2,0,2,medical_procedures
+reintubation_status,Re-intubation status,Int64,1 .. 2,180,2,medical_procedures
+intubation_days,Duration of intubation (days),float64,0 .. 59,180,40,medical_procedures
+urinary_catheter,Urinary catheter usage,Int64,1 .. 2,0,2,medical_procedures
+urinary_catheter_days,Duration of urinary catheterization (days),float64,0 .. 72,94,41,medical_procedures
+central_line_count,Number of intravascular catheters,int64,0 .. 6,0,7,medical_procedures
+ecmo_status,ECMO usage,Int64,1 .. 3,0,3,medical_procedures
+icu_mortality,Death in ICU,Int64,1 .. 2,0,2,medical_procedures
+length_of_stay,ICU length of stay (days),float64,1 .. 94,75,45,temporal
+has_infection,Target: bacteremia or pneumonia during ICU stay,Int64,0 .. 1,0,2,target
+admission_year,Year of admission,int32,2019 .. 2021,0,3,temporal
+admission_month,Month of admission,int32,1 .. 6,0,6,temporal
+admission_weekday,Admission day of week (0=Mon..6=Sun),int32,0 .. 6,0,7,temporal
+weekend_admission,Weekend admission flag,Int64,0 .. 1,0,2,temporal
+bed_occupancy,Number of other patients present in ICU at admission,int64,0 .. 18,0,19,organizational_environment
+patient_turnover,Admissions + discharges on admission day,int64,1 .. 9,0,9,organizational_environment
+unit_avg_los,Unit monthly gross LOS mean,float64,3.96 .. 15.59,0,15,organizational_environment
+national_avg_los,National average LOS,float64,12.69 .. 19.01,0,15,organizational_environment
+los_ratio_national,Unit LOS to national LOS ratio,float64,1.081 .. 2.826,0,15,organizational_environment
+nurse_staffing_etp,Mean daily general nurse ETP during stay,float64,45.55 .. 59.1,0,241,organizational_staffing
+nurse_aide_staffing_etp,Mean daily nursing assistant ETP during stay,float64,19.6 .. 41.29,0,210,organizational_staffing
+nurse_anesthetist_staffing_etp,,float64,0 .. 1,0,15,organizational_staffing
+dietitian_staffing_etp,,float64,0 .. 0.6,0,98,organizational_staffing
+hospital_services_staffing_etp,,float64,0 .. 0,0,1,organizational_staffing
+admin_assistant_staffing_etp,,float64,0 .. 0,0,1,organizational_staffing
+medical_admin_assistant_staffing_etp,,float64,0.3333 .. 1,0,30,organizational_staffing
+total_staffing_etp,Mean daily total staff ETP during stay,float64,68.73 .. 98.19,0,303,organizational_staffing
+nurse_staffing_count,Mean daily general nurse headcount during stay,float64,49 .. 63,0,191,organizational_staffing
+nurse_aide_staffing_count,Mean daily nursing assistant headcount during stay,float64,20 .. 43.39,0,169,organizational_staffing
+nurse_anesthetist_staffing_count,,float64,0 .. 1,0,15,organizational_staffing
+dietitian_staffing_count,,float64,0 .. 2,0,66,organizational_staffing
+hospital_services_staffing_count,,float64,0 .. 0,0,1,organizational_staffing
+admin_assistant_staffing_count,,float64,0 .. 0,0,1,organizational_staffing
+medical_admin_assistant_staffing_count,,float64,0.3333 .. 1,0,25,organizational_staffing
+total_staffing_count,Mean daily total staff headcount during stay,float64,73.83 .. 104,0,220,organizational_staffing

@@ -1,0 +1,27 @@
+Variable,Overall (n=406),No infection (n=309),Infection (n=97),p-value
+Age (years),63.12 ± 14.88,62.67 ± 15.32,64.56 ± 13.37,0.3719
+Severity score (IGS2),39.21 ± 17.61,38.18 ± 17.55,42.63 ± 17.46,0.0293
+Length of stay (days),9.74 ± 12.06,6.80 ± 8.49,22.02 ± 16.36,0.0000
+Intubation duration (days),10.82 ± 10.83,6.66 ± 7.58,17.22 ± 11.94,0.0000
+Urinary catheter duration (days),10.17 ± 11.14,6.47 ± 6.30,19.75 ± 14.71,0.0000
+Sex: 1,263 (64.8%),192 (62.1%),71 (73.2%),0.0217
+Sex: 2,142 (35.0%),117 (37.9%),25 (25.8%),
+Sex: 3,1 (0.2%),0 (0.0%),1 (1.0%),
+Admission origin: 3,192 (47.3%),132 (42.7%),60 (61.9%),0.0027
+Admission origin: 1,142 (35.0%),121 (39.2%),21 (21.6%),
+Admission origin: 8,29 (7.1%),26 (8.4%),3 (3.1%),
+Admission origin: 2,29 (7.1%),17 (5.5%),12 (12.4%),
+Admission origin: 4,8 (2.0%),8 (2.6%),0 (0.0%),
+Admission origin: 5,3 (0.7%),2 (0.6%),1 (1.0%),
+Admission origin: 7,1 (0.2%),1 (0.3%),0 (0.0%),
+Admission origin: 9,1 (0.2%),1 (0.3%),0 (0.0%),
+Admission origin: 6,1 (0.2%),1 (0.3%),0 (0.0%),
+Diagnostic category: 1,363 (89.4%),272 (88.0%),91 (93.8%),0.4175
+Diagnostic category: 2,41 (10.1%),35 (11.3%),6 (6.2%),
+Diagnostic category: 9,1 (0.2%),1 (0.3%),0 (0.0%),
+Diagnostic category: 3,1 (0.2%),1 (0.3%),0 (0.0%),
+Intubation status: 1,226 (55.7%),137 (44.3%),89 (91.8%),0.0000
+Intubation status: 2,180 (44.3%),172 (55.7%),8 (8.2%),
+Reintubation status: 2.0,189 (83.6%),121 (88.3%),68 (76.4%),0.0000
+Reintubation status: missing,0 (0.0%),0 (0.0%),0 (0.0%),
+Reintubation status: 1.0,37 (16.4%),16 (11.7%),21 (23.6%),

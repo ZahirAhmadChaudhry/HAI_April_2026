@@ -1,0 +1,7 @@
+comparison,base_config,other_config,metric,n_pairs,base_mean,other_mean,mean_delta_other_minus_base,median_delta_other_minus_base,wilcoxon_statistic,p_value,significant_at_0_05,interpretation
+Config1_vs_Config2,A,A_plus_staffing,precision,1,0.7222222222222222,0.5964912280701754,-0.1257309941520468,-0.1257309941520468,0.0,1.0,False,Precision dropped (suggests more false positives).
+Config1_vs_Config2,A,A_plus_staffing,recall,1,0.65,0.85,0.19999999999999996,0.19999999999999996,0.0,1.0,False,Recall improved (fewer false negatives).
+Config1_vs_Config3,A,A_plus_environment,precision,1,0.7222222222222222,0.6296296296296297,-0.09259259259259256,-0.09259259259259256,0.0,1.0,False,Precision dropped (suggests more false positives).
+Config1_vs_Config3,A,A_plus_environment,recall,1,0.65,0.85,0.19999999999999996,0.19999999999999996,0.0,1.0,False,Recall improved (fewer false negatives).
+Config1_vs_Config4,A,B,precision,1,0.7222222222222222,0.5901639344262295,-0.1320582877959927,-0.1320582877959927,0.0,1.0,False,Precision dropped (suggests more false positives).
+Config1_vs_Config4,A,B,recall,1,0.65,0.9,0.25,0.25,0.0,1.0,False,Recall improved (fewer false negatives).

@@ -1,0 +1,79 @@
+row_type,name,original_feature,group,importance_mean,importance_sd,importance_median
+feature,intubation_days,intubation_days,Medical Procedures,0.06661473181111806,,0.06661473181111806
+feature,urinary_catheter_days,urinary_catheter_days,Medical Procedures,0.05361476799807402,,0.05361476799807402
+feature,intubation_status_2,intubation_status,Medical Procedures,0.03262748834365397,,0.03262748834365397
+feature,reintubation_status_not_applicable,reintubation_status,Medical Procedures,0.03160378504221927,,0.03160378504221927
+feature,length_of_stay,length_of_stay,Length of Stay,0.03125145952364848,,0.03125145952364848
+feature,total_staffing_etp,total_staffing_etp,Organizational Staffing,0.027563408952574323,,0.027563408952574323
+feature,intubation_status_1,intubation_status,Medical Procedures,0.025413378783658545,,0.025413378783658545
+feature,los_ratio_national,los_ratio_national,Organizational Environment,0.023721425605663003,,0.023721425605663003
+feature,nurse_aide_staffing_etp,nurse_aide_staffing_etp,Organizational Staffing,0.018683946935821323,,0.018683946935821323
+feature,unit_avg_los,unit_avg_los,Organizational Environment,0.018612297239194206,,0.018612297239194206
+feature,central_line_count,central_line_count,Medical Procedures,0.017718929539267236,,0.017718929539267236
+feature,medical_admin_assistant_staffing_etp,medical_admin_assistant_staffing_etp,Organizational Staffing,0.015576994149375283,,0.015576994149375283
+feature,nurse_staffing_etp,nurse_staffing_etp,Organizational Staffing,0.014950081733310026,,0.014950081733310026
+feature,reintubation_status_2,reintubation_status,Medical Procedures,0.013930474132862828,,0.013930474132862828
+feature,admission_weekday_2,admission_weekday,Temporal,0.01033109211503304,,0.01033109211503304
+feature,dietitian_staffing_etp,dietitian_staffing_etp,Organizational Staffing,0.008138016293470125,,0.008138016293470125
+feature,sex_2,sex,Patient Demographics,0.006387710084409086,,0.006387710084409086
+feature,severity_score_igs2,severity_score_igs2,Clinical Severity,0.0060143834481634975,,0.0060143834481634975
+feature,dietitian_staffing_count,dietitian_staffing_count,Organizational Staffing,0.005640995764585268,,0.005640995764585268
+feature,admission_weekday_5,admission_weekday,Temporal,0.005040800060980527,,0.005040800060980527
+feature,admission_month_3,admission_month,Temporal,0.005037406779479014,,0.005037406779479014
+feature,admission_weekday_3,admission_weekday,Temporal,0.004879861116073976,,0.004879861116073976
+feature,sex_1,sex,Patient Demographics,0.004861971445093386,,0.004861971445093386
+feature,age,age,Patient Demographics,0.004821407040994772,,0.004821407040994772
+feature,national_avg_los,national_avg_los,Organizational Environment,0.004765919851141847,,0.004765919851141847
+feature,cancer_status_3,cancer_status,Clinical Severity,0.004730516334707515,,0.004730516334707515
+feature,bed_occupancy,bed_occupancy,Organizational Environment,0.00470301568588493,,0.00470301568588493
+feature,immunosuppression_2,immunosuppression,Clinical Severity,0.004336978510097787,,0.004336978510097787
+feature,immunosuppression_3,immunosuppression,Clinical Severity,0.003937757825461021,,0.003937757825461021
+feature,cancer_status_9,cancer_status,Clinical Severity,0.003482105853504103,,0.003482105853504103
+feature,admission_origin_3,admission_origin,Patient Demographics,0.0033829468937421983,,0.0033829468937421983
+feature,admission_origin_1,admission_origin,Patient Demographics,0.0031019635314869878,,0.0031019635314869878
+feature,weekend_admission_0,weekend_admission,Temporal,0.0028151811412825078,,0.0028151811412825078
+feature,patient_turnover,patient_turnover,Organizational Environment,0.0027547172911662142,,0.0027547172911662142
+feature,admission_weekday_1,admission_weekday,Temporal,0.0027536405334804255,,0.0027536405334804255
+feature,admission_month_2,admission_month,Temporal,0.0027424915969876396,,0.0027424915969876396
+feature,reintubation_status_1,reintubation_status,Medical Procedures,0.00269957061717135,,0.00269957061717135
+feature,diagnostic_category_2,diagnostic_category,Clinical Severity,0.002448357553928116,,0.002448357553928116
+feature,urinary_catheter_2,urinary_catheter,Medical Procedures,0.0024372799527486947,,0.0024372799527486947
+feature,diagnostic_category_1,diagnostic_category,Clinical Severity,0.0023468930344496797,,0.0023468930344496797
+feature,antibiotic_at_admission_1,antibiotic_at_admission,Clinical Severity,0.0022551722852431296,,0.0022551722852431296
+feature,admission_month_4,admission_month,Temporal,0.0019611715669178944,,0.0019611715669178944
+feature,weekend_admission_1,weekend_admission,Temporal,0.0018387819414639654,,0.0018387819414639654
+feature,admission_weekday_6,admission_weekday,Temporal,0.0017983635211018393,,0.0017983635211018393
+feature,admission_origin_2,admission_origin,Patient Demographics,0.0017826735681519157,,0.0017826735681519157
+feature,antibiotic_at_admission_2,antibiotic_at_admission,Clinical Severity,0.0016832049862194958,,0.0016832049862194958
+feature,admission_weekday_4,admission_weekday,Temporal,0.0014902997271493048,,0.0014902997271493048
+feature,urinary_catheter_1,urinary_catheter,Medical Procedures,0.0014490903039652092,,0.0014490903039652092
+feature,admission_month_5,admission_month,Temporal,0.001436099654176643,,0.001436099654176643
+feature,admission_weekday_0,admission_weekday,Temporal,0.0013244349949305277,,0.0013244349949305277
+feature,cancer_status_1,cancer_status,Clinical Severity,0.0010899003036676173,,0.0010899003036676173
+feature,ecmo_status_1,ecmo_status,Medical Procedures,0.0006897860560468455,,0.0006897860560468455
+feature,admission_origin_8,admission_origin,Patient Demographics,0.0006068773751273432,,0.0006068773751273432
+feature,ecmo_status_2,ecmo_status,Medical Procedures,0.000571199449970255,,0.000571199449970255
+feature,ecmo_status_3,ecmo_status,Medical Procedures,0.0004719563662243026,,0.0004719563662243026
+feature,cancer_status_2,cancer_status,Clinical Severity,0.00035217787284531167,,0.00035217787284531167
+feature,trauma_status_1,trauma_status,Clinical Severity,0.00034102823233795975,,0.00034102823233795975
+feature,trauma_status_2,trauma_status,Clinical Severity,0.00022584699021798227,,0.00022584699021798227
+feature,immunosuppression_1,immunosuppression,Clinical Severity,7.244617115465882e-05,,7.244617115465882e-05
+feature,medical_admin_assistant_staffing_count,medical_admin_assistant_staffing_count,Organizational Staffing,3.075401846903947e-19,,3.075401846903947e-19
+feature,admission_month_1,admission_month,Temporal,0.0,,0.0
+feature,admission_month_6,admission_month,Temporal,0.0,,0.0
+feature,admission_origin_5,admission_origin,Patient Demographics,0.0,,0.0
+feature,diagnostic_category_9,diagnostic_category,Clinical Severity,0.0,,0.0
+feature,antibiotic_at_admission_9,antibiotic_at_admission,Clinical Severity,0.0,,0.0
+feature,admission_origin_6,admission_origin,Patient Demographics,0.0,,0.0
+feature,admission_origin_9,admission_origin,Patient Demographics,0.0,,0.0
+feature,admission_origin_4,admission_origin,Patient Demographics,0.0,,0.0
+feature,admission_origin_7,admission_origin,Patient Demographics,0.0,,0.0
+feature,nurse_anesthetist_staffing_etp,nurse_anesthetist_staffing_etp,Organizational Staffing,0.0,,0.0
+feature,immunosuppression_9,immunosuppression,Clinical Severity,0.0,,0.0
+group,Medical Procedures,,Medical Procedures,47.32611349696654,,47.32611349696654
+group,Organizational Staffing,,Organizational Staffing,17.152980845429834,,17.152980845429834
+group,Organizational Environment,,Organizational Environment,10.334467473843784,,10.334467473843784
+group,Temporal,,Temporal,8.230394665806076,,8.230394665806076
+group,Clinical Severity,,Clinical Severity,6.310990319290244,,6.310990319290244
+group,Length of Stay,,Length of Stay,5.9197713961309075,,5.9197713961309075
+group,Patient Demographics,,Patient Demographics,4.725281802532623,,4.725281802532623

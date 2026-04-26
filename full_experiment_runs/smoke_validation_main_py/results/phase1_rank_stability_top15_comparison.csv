@@ -1,0 +1,16 @@
+position,model_a_feature,model_a_group,model_a_mean_rank,model_a_stability_index,model_b_feature,model_b_group,model_b_mean_rank,model_b_stability_index
+1,intubation_days,Medical Procedures,1.0,0.0,intubation_status,Medical Procedures,1.0,0.0
+2,intubation_status,Medical Procedures,2.0,0.0,intubation_days,Medical Procedures,2.0,0.0
+3,urinary_catheter_days,Medical Procedures,3.0,0.0,reintubation_status,Medical Procedures,3.0,0.0
+4,admission_weekday,Temporal,4.0,0.0,urinary_catheter_days,Medical Procedures,4.0,0.0
+5,cancer_status,Clinical Severity,5.0,0.0,medical_admin_assistant_staffing_etp,Organizational Staffing,5.0,0.0
+6,reintubation_status,Medical Procedures,6.0,0.0,total_staffing_etp,Organizational Staffing,6.0,0.0
+7,length_of_stay,Length of Stay,7.0,0.0,nurse_aide_staffing_etp,Organizational Staffing,7.0,0.0
+8,admission_month,Temporal,8.0,0.0,length_of_stay,Length of Stay,8.0,0.0
+9,central_line_count,Medical Procedures,9.0,0.0,central_line_count,Medical Procedures,9.0,0.0
+10,admission_origin,Patient Demographics,10.0,0.0,los_ratio_national,Organizational Environment,10.0,0.0
+11,sex,Patient Demographics,11.0,0.0,nurse_staffing_etp,Organizational Staffing,11.0,0.0
+12,immunosuppression,Clinical Severity,12.0,0.0,cancer_status,Clinical Severity,12.0,0.0
+13,urinary_catheter,Medical Procedures,13.0,0.0,unit_avg_los,Organizational Environment,13.0,0.0
+14,antibiotic_at_admission,Clinical Severity,14.0,0.0,admission_weekday,Temporal,14.0,0.0
+15,weekend_admission,Temporal,15.0,0.0,sex,Patient Demographics,15.0,0.0

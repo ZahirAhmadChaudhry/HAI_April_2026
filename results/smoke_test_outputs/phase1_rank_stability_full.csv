@@ -1,0 +1,54 @@
+feature_set,feature,group,mean_rank,stability_index_rank_sd,mean_abs_shap
+A,intubation_days,Medical Procedures,1.0,0.0,0.07691059390111736
+A,intubation_status,Medical Procedures,2.0,0.0,0.07384321567303175
+A,urinary_catheter_days,Medical Procedures,3.0,0.0,0.05631130484731694
+A,admission_weekday,Temporal,4.0,0.0,0.044199779238888286
+A,cancer_status,Clinical Severity,5.0,0.0,0.04135081660814388
+A,reintubation_status,Medical Procedures,6.0,0.0,0.03974142787786989
+A,length_of_stay,Length of Stay,7.0,0.0,0.03199624464822734
+A,admission_month,Temporal,8.0,0.0,0.031072371478697486
+A,central_line_count,Medical Procedures,9.0,0.0,0.026418420665311946
+A,admission_origin,Patient Demographics,10.0,0.0,0.020489142883864095
+A,sex,Patient Demographics,11.0,0.0,0.016255379777657068
+A,immunosuppression,Clinical Severity,12.0,0.0,0.010197952956011868
+A,urinary_catheter,Medical Procedures,13.0,0.0,0.00849551637657382
+A,antibiotic_at_admission,Clinical Severity,14.0,0.0,0.007962462363183749
+A,weekend_admission,Temporal,15.0,0.0,0.007721321855988871
+A,age,Patient Demographics,16.0,0.0,0.005426670704499901
+A,ecmo_status,Medical Procedures,17.0,0.0,0.005353651766811031
+A,diagnostic_category,Clinical Severity,18.0,0.0,0.004526303452450416
+A,severity_score_igs2,Clinical Severity,19.0,0.0,0.003923279805861542
+A,trauma_status,Clinical Severity,20.0,0.0,0.0005076625400032105
+B,intubation_days,Medical Procedures,1.0,0.0,0.06661473181111804
+B,intubation_status,Medical Procedures,2.0,0.0,0.05804086712731252
+B,urinary_catheter_days,Medical Procedures,3.0,0.0,0.05361476799807403
+B,reintubation_status,Medical Procedures,4.0,0.0,0.04823382979225345
+B,length_of_stay,Length of Stay,5.0,0.0,0.03125145952364849
+B,admission_weekday,Temporal,6.0,0.0,0.027618492068749636
+B,total_staffing_etp,Organizational Staffing,7.0,0.0,0.027563408952574316
+B,los_ratio_national,Organizational Environment,8.0,0.0,0.023721425605662996
+B,nurse_aide_staffing_etp,Organizational Staffing,9.0,0.0,0.01868394693582132
+B,unit_avg_los,Organizational Environment,10.0,0.0,0.0186122972391942
+B,central_line_count,Medical Procedures,11.0,0.0,0.017718929539267243
+B,medical_admin_assistant_staffing_etp,Organizational Staffing,12.0,0.0,0.015576994149375275
+B,nurse_staffing_etp,Organizational Staffing,13.0,0.0,0.014950081733310031
+B,sex,Patient Demographics,14.0,0.0,0.011249681529502474
+B,admission_month,Temporal,15.0,0.0,0.011177169597561187
+B,cancer_status,Clinical Severity,16.0,0.0,0.009654700364724551
+B,admission_origin,Patient Demographics,17.0,0.0,0.008874461368508446
+B,immunosuppression,Clinical Severity,18.0,0.0,0.00834718250671347
+B,dietitian_staffing_etp,Organizational Staffing,19.0,0.0,0.008138016293470125
+B,severity_score_igs2,Clinical Severity,20.0,0.0,0.0060143834481635
+B,dietitian_staffing_count,Organizational Staffing,21.0,0.0,0.005640995764585268
+B,age,Patient Demographics,22.0,0.0,0.0048214070409947725
+B,diagnostic_category,Clinical Severity,23.0,0.0,0.004795250588377797
+B,national_avg_los,Organizational Environment,24.0,0.0,0.004765919851141847
+B,bed_occupancy,Organizational Environment,25.0,0.0,0.004703015685884928
+B,weekend_admission,Temporal,26.0,0.0,0.0046539630827464725
+B,antibiotic_at_admission,Clinical Severity,27.0,0.0,0.003938377271462625
+B,urinary_catheter,Medical Procedures,28.0,0.0,0.0038863702567139046
+B,patient_turnover,Organizational Environment,29.0,0.0,0.0027547172911662142
+B,ecmo_status,Medical Procedures,30.0,0.0,0.0017329418722414028
+B,trauma_status,Clinical Severity,31.0,0.0,0.0005668752225559423
+B,medical_admin_assistant_staffing_count,Organizational Staffing,32.0,0.0,3.075401846903947e-19
+B,nurse_anesthetist_staffing_etp,Organizational Staffing,33.0,0.0,0.0

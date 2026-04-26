@@ -1,0 +1,3 @@
+scenario,weight_fn,weight_fp,threshold,true_negatives,false_positives,false_negatives,true_positives,precision,recall,total_cost
+Scenario_1_FN3_FP1,3.0,1.0,0.63,71,15,7,33,0.6875,0.825,36.0
+Scenario_2_FN5_FP1,5.0,1.0,0.5,61,25,4,36,0.5901639344262295,0.9,45.0

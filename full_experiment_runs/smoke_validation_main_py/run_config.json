@@ -1,0 +1,20 @@
+{
+  "started_at": "2026-04-25T16:43:31Z",
+  "run_name": "smoke_validation_main_py",
+  "run_dir": "D:/My_data/Internship/HAI/Data_analysis/HAI_April_2026/full_experiment_runs/smoke_validation_main_py",
+  "input_dataset": "D:/My_data/Internship/HAI/Data_analysis/HAI_April_2026/clean_hai_dataset.csv",
+  "cleaned_features_json": "D:/My_data/Internship/HAI/Data_analysis/HAI_April_2026/cleaned_feature_sets.json",
+  "algorithms": [
+    "random_forest"
+  ],
+  "seed_start": 43,
+  "seed_end": 62,
+  "effective_seeds": [
+    43
+  ],
+  "n_trials": 2,
+  "smoke": true,
+  "stop_on_error": false,
+  "gpu_env_hint": "Set HAI_USE_GPU=1 on Linux remote for forced GPU path.",
+  "finished_at": "2026-04-25T16:43:31Z"
+}

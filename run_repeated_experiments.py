@@ -19,7 +19,7 @@ import shap
 from catboost import CatBoostClassifier
 from imblearn.over_sampling import SMOTE
 from lightgbm import LGBMClassifier
-from scipy.stats import ttest_1samp, wilcoxon
+from scipy.stats import mannwhitneyu, spearmanr, ttest_1samp, ttest_rel, wilcoxon
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import (
@@ -29,6 +29,7 @@ from sklearn.metrics import (
     confusion_matrix,
     f1_score,
     matthews_corrcoef,
+    precision_recall_curve,
     precision_score,
     recall_score,
     roc_auc_score,
@@ -49,11 +50,30 @@ OUTPUT_RESULTS = BASE_DIR / "repeated_experiment_results.csv"
 OUTPUT_CHECKPOINT = BASE_DIR / "repeated_experiment_checkpoint.csv"
 OUTPUT_SUMMARY = BASE_DIR / "repeated_experiment_summary.md"
 OUTPUT_SHAP_STABILITY = BASE_DIR / "repeated_shap_stability.csv"
+RESULTS_DIR = BASE_DIR / "results"
+
+PHASE_ANALYSIS_REPORT = RESULTS_DIR / "phase_1_2_3_analysis_report.md"
+
+PHASE1_SPEARMAN_MATRIX = RESULTS_DIR / "phase1_clinical_org_spearman_matrix.csv"
+PHASE1_TOP20_CORR = RESULTS_DIR / "phase1_top20_clinical_org_correlations.csv"
+PHASE1_RANK_FULL = RESULTS_DIR / "phase1_rank_stability_full.csv"
+PHASE1_RANK_TOP15 = RESULTS_DIR / "phase1_rank_stability_top15_comparison.csv"
+PHASE1_DELTA_SHAP = RESULTS_DIR / "phase1_delta_shap_ttests.csv"
+
+PHASE2_SEED_BEST = RESULTS_DIR / "phase2_seed_best_metrics.csv"
+PHASE2_WILCOXON = RESULTS_DIR / "phase2_wilcoxon_comparisons.csv"
+
+PHASE3_CONFIDENCE = RESULTS_DIR / "phase3_confidence_org_shap_analysis.csv"
+PHASE3_THRESHOLD_CURVE = RESULTS_DIR / "phase3_threshold_cost_curve.csv"
+PHASE3_OPT_THRESHOLDS = RESULTS_DIR / "phase3_optimal_thresholds.csv"
 
 FIG_DIR = BASE_DIR / "figures"
 FIG_AUC_BOXPLOT = FIG_DIR / "auc_distribution_boxplot.png"
 FIG_AUC_DIFF_HIST = FIG_DIR / "auc_difference_histogram.png"
 FIG_SHAP_STABILITY = FIG_DIR / "shap_stability_plot.png"
+FIG_PHASE1_SPEARMAN = FIG_DIR / "phase1_clinical_org_spearman_heatmap.png"
+FIG_PHASE3_PR_CURVE = FIG_DIR / "phase3_model_b_precision_recall_curve.png"
+FIG_PHASE3_CONFUSIONS = FIG_DIR / "phase3_cost_adjusted_confusions.png"
 
 START_SEED = 43
 END_SEED = 62
@@ -124,6 +144,13 @@ FEATURE_GROUPS = {
     },
 }
 
+CONFIG_LABELS = {
+    "A": "Config 1: Clinical-Only (Groups 1-5)",
+    "A_plus_staffing": "Config 2: Clinical + Staffing (Groups 1-5 + Group 7)",
+    "A_plus_environment": "Config 3: Clinical + Environment (Groups 1-5 + Group 6)",
+    "B": "Config 4: Full Integrated (Groups 1-7)",
+}
+
 
 def detect_gpu_available() -> tuple[bool, str]:
     flag = os.environ.get("HAI_USE_GPU", "").strip().lower()
@@ -175,6 +202,7 @@ def configure_plots() -> None:
 
 def ensure_dirs() -> None:
     FIG_DIR.mkdir(parents=True, exist_ok=True)
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def to_md_table(df: pd.DataFrame, max_rows: int = 300) -> str:
@@ -311,6 +339,89 @@ def make_safe_smote(y: pd.Series, seed: int) -> SMOTE | None:
 
     k_neighbors = min(5, minority - 1)
     return SMOTE(random_state=seed, k_neighbors=k_neighbors)
+
+
+def ordered_unique(seq: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in seq:
+        if item not in seen:
+            seen.add(item)
+            out.append(item)
+    return out
+
+
+def feature_to_group_lookup() -> dict[str, str]:
+    lookup: dict[str, str] = {}
+    for group_name, feats in FEATURE_GROUPS.items():
+        for feat in feats:
+            lookup[feat] = group_name
+    return lookup
+
+
+def build_feature_configs(model_a_features: list[str], model_b_features: list[str]) -> list[dict[str, Any]]:
+    lookup = feature_to_group_lookup()
+
+    staffing = [
+        f
+        for f in model_b_features
+        if lookup.get(f) == "Organizational Staffing"
+    ]
+    environment = [
+        f
+        for f in model_b_features
+        if lookup.get(f) == "Organizational Environment"
+    ]
+
+    configs = [
+        {
+            "config_id": "C1",
+            "feature_set": "A",
+            "config_name": CONFIG_LABELS["A"],
+            "features": ordered_unique(model_a_features),
+        },
+        {
+            "config_id": "C2",
+            "feature_set": "A_plus_staffing",
+            "config_name": CONFIG_LABELS["A_plus_staffing"],
+            "features": ordered_unique(model_a_features + staffing),
+        },
+        {
+            "config_id": "C3",
+            "feature_set": "A_plus_environment",
+            "config_name": CONFIG_LABELS["A_plus_environment"],
+            "features": ordered_unique(model_a_features + environment),
+        },
+        {
+            "config_id": "C4",
+            "feature_set": "B",
+            "config_name": CONFIG_LABELS["B"],
+            "features": ordered_unique(model_b_features),
+        },
+    ]
+
+    return configs
+
+
+def get_feature_map(feature_configs: list[dict[str, Any]]) -> dict[str, list[str]]:
+    return {
+        str(cfg["feature_set"]): list(cfg["features"])
+        for cfg in feature_configs
+    }
+
+
+def select_best_rows_per_seed(results_df: pd.DataFrame, feature_set: str) -> pd.DataFrame:
+    subset = results_df[results_df["feature_set"] == feature_set].copy()
+    if subset.empty:
+        return subset
+
+    out = (
+        subset.sort_values(["seed", "auc_roc", "cv_auc_roc"], ascending=[True, False, False])
+        .groupby("seed", as_index=False)
+        .first()
+        .reset_index(drop=True)
+    )
+    return out
 
 
 # ============================================================
@@ -640,7 +751,7 @@ def map_feature_group(original_feature: str) -> str:
     return "Other"
 
 
-def compute_shap_mean_abs(model: Any, X_test_processed: pd.DataFrame) -> np.ndarray:
+def compute_shap_values(model: Any, X_test_processed: pd.DataFrame) -> np.ndarray:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         try:
@@ -655,7 +766,104 @@ def compute_shap_mean_abs(model: Any, X_test_processed: pd.DataFrame) -> np.ndar
     if values.ndim == 3:
         values = values[:, :, 1]
 
+    return values.astype(float)
+
+
+def compute_shap_mean_abs(model: Any, X_test_processed: pd.DataFrame) -> np.ndarray:
+    values = compute_shap_values(model, X_test_processed)
     return np.abs(values).mean(axis=0)
+
+
+def aggregate_abs_shap_by_original_feature(
+    shap_values: np.ndarray,
+    encoded_feature_names: list[str],
+    original_features: list[str],
+) -> pd.DataFrame:
+    abs_df = pd.DataFrame(np.abs(shap_values), columns=encoded_feature_names)
+    agg_cols: dict[str, np.ndarray] = {}
+
+    for feat in encoded_feature_names:
+        orig = infer_original_feature(feat, original_features)
+        values = abs_df[feat].to_numpy(dtype=float)
+        if orig in agg_cols:
+            agg_cols[orig] = agg_cols[orig] + values
+        else:
+            agg_cols[orig] = values.copy()
+
+    out = pd.DataFrame(agg_cols, index=abs_df.index)
+    return out
+
+
+def to_spearman_numeric(series: pd.Series) -> pd.Series:
+    numeric = pd.to_numeric(series, errors="coerce")
+    non_na_numeric = int(numeric.notna().sum())
+
+    if non_na_numeric > 0:
+        return numeric.astype(float)
+
+    as_string = series.astype("string")
+    codes, _ = pd.factorize(as_string, sort=True)
+    coded = pd.Series(codes, index=series.index, dtype=float)
+    coded[codes < 0] = np.nan
+    return coded
+
+
+def run_phase1_clinical_org_correlation(
+    df: pd.DataFrame,
+    clinical_features: list[str],
+    org_features: list[str],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    work = apply_duration_rules(df[clinical_features + org_features].copy())
+
+    transformed: dict[str, pd.Series] = {}
+    for col in clinical_features + org_features:
+        transformed[col] = to_spearman_numeric(work[col])
+
+    matrix = pd.DataFrame(index=clinical_features, columns=org_features, dtype=float)
+    pairs: list[dict[str, Any]] = []
+
+    for c in clinical_features:
+        for o in org_features:
+            a = transformed[c]
+            b = transformed[o]
+            valid = a.notna() & b.notna()
+
+            if int(valid.sum()) < 3 or a[valid].nunique() < 2 or b[valid].nunique() < 2:
+                rho = float("nan")
+            else:
+                rho = float(spearmanr(a[valid], b[valid]).statistic)
+
+            matrix.loc[c, o] = rho
+            pairs.append(
+                {
+                    "clinical_feature": c,
+                    "organizational_feature": o,
+                    "spearman_rho": rho,
+                    "abs_spearman_rho": abs(rho) if np.isfinite(rho) else float("nan"),
+                    "n_pairwise_non_missing": int(valid.sum()),
+                }
+            )
+
+    pair_df = (
+        pd.DataFrame(pairs)
+        .dropna(subset=["spearman_rho"])
+        .sort_values("abs_spearman_rho", ascending=False)
+        .reset_index(drop=True)
+    )
+
+    plt.figure(figsize=(12, max(4, int(len(clinical_features) * 0.35))))
+    sns.heatmap(matrix, cmap="coolwarm", center=0.0, vmin=-1.0, vmax=1.0)
+    plt.title("Phase 1: Clinical vs Organizational Spearman Correlations")
+    plt.xlabel("Organizational features (Groups 6-7)")
+    plt.ylabel("Clinical features (Groups 1-5)")
+    plt.tight_layout()
+    plt.savefig(FIG_PHASE1_SPEARMAN, dpi=150, bbox_inches="tight")
+    plt.close()
+
+    matrix.to_csv(PHASE1_SPEARMAN_MATRIX, index=True)
+    pair_df.head(20).to_csv(PHASE1_TOP20_CORR, index=False)
+
+    return matrix, pair_df
 
 
 # ============================================================
@@ -669,19 +877,23 @@ def run_single_seed(
     y_train: pd.Series,
     y_test: pd.Series,
     years_train: pd.Series,
-    model_a_features: list[str],
-    model_b_features: list[str],
+    feature_configs: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
 
-    for feature_set_name, feature_cols in [("A", model_a_features), ("B", model_b_features)]:
+    for cfg in feature_configs:
+        feature_set_name = str(cfg["feature_set"])
+        config_id = str(cfg["config_id"])
+        config_name = str(cfg["config_name"])
+        feature_cols = list(cfg["features"])
+
         X_train_raw = train_df[feature_cols].copy()
         X_test_raw = test_df[feature_cols].copy()
 
         for algorithm in ALGORITHMS:
             best_params, best_cv_auc = tune_algorithm(
                 algorithm=algorithm,
-                feature_set_name=feature_set_name,
+                feature_set_name=config_name,
                 X_train_df=X_train_raw,
                 y_train=y_train,
                 years_train=years_train,
@@ -705,7 +917,9 @@ def run_single_seed(
             row = {
                 "run_id": run_id,
                 "seed": seed,
-                "model_id": f"Model_{feature_set_name}_{algorithm}",
+                "model_id": f"Model_{config_id}_{algorithm}",
+                "config_id": config_id,
+                "config_name": config_name,
                 "feature_set": feature_set_name,
                 "algorithm": algorithm,
                 "n_features": len(feature_cols),
@@ -716,7 +930,7 @@ def run_single_seed(
             rows.append(row)
 
             print(
-                f"[run={run_id} seed={seed}] {feature_set_name}/{algorithm}: "
+                f"[run={run_id} seed={seed}] {config_id} ({feature_set_name})/{algorithm}: "
                 f"AUC={metrics['auc_roc']:.4f}, PR={metrics['auc_pr']:.4f}, F1={metrics['f1']:.4f}"
             )
 
@@ -740,8 +954,7 @@ def load_cleaned_feature_sets() -> tuple[list[str], list[str]]:
     return model_a, model_b
 
 
-def resume_checkpoint(seeds: list[int]) -> list[dict[str, Any]]:
-    expected_per_seed = len(ALGORITHMS) * 2
+def resume_checkpoint(seeds: list[int], expected_per_seed: int) -> list[dict[str, Any]]:
 
     if not OUTPUT_CHECKPOINT.exists():
         return []
@@ -927,6 +1140,586 @@ def run_shap_stability(
     return feature_df, feat_stability, grp_stability
 
 
+def retrain_best_models_for_feature_set(
+    results_df: pd.DataFrame,
+    feature_set: str,
+    train_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    y_train: pd.Series,
+    feature_map: dict[str, list[str]],
+) -> dict[int, dict[str, Any]]:
+    outputs: dict[int, dict[str, Any]] = {}
+    best_rows = select_best_rows_per_seed(results_df, feature_set)
+
+    if best_rows.empty:
+        return outputs
+
+    feature_cols = feature_map.get(feature_set, [])
+    if not feature_cols:
+        return outputs
+
+    X_train_raw = train_df[feature_cols].copy()
+    X_test_raw = test_df[feature_cols].copy()
+
+    for _, row in best_rows.iterrows():
+        seed = int(row["seed"])
+        algorithm = str(row["algorithm"])
+        params = json.loads(str(row["best_params_json"]))
+
+        trained = train_final_model(
+            algorithm=algorithm,
+            params=params,
+            X_train_raw=X_train_raw,
+            y_train=y_train,
+            X_test_raw=X_test_raw,
+            feature_cols=feature_cols,
+            seed=seed,
+        )
+
+        X_test_processed = trained["X_test_processed"]
+        shap_values = compute_shap_values(trained["model"], X_test_processed)
+        abs_by_original = aggregate_abs_shap_by_original_feature(
+            shap_values=shap_values,
+            encoded_feature_names=X_test_processed.columns.tolist(),
+            original_features=feature_cols,
+        )
+
+        org_cols = [
+            c
+            for c in abs_by_original.columns
+            if map_feature_group(c) in {"Organizational Environment", "Organizational Staffing"}
+        ]
+        org_abs = (
+            abs_by_original[org_cols].sum(axis=1).to_numpy(dtype=float)
+            if org_cols
+            else np.zeros(X_test_processed.shape[0], dtype=float)
+        )
+
+        outputs[seed] = {
+            "run_id": int(row["run_id"]),
+            "algorithm": algorithm,
+            "feature_cols": feature_cols,
+            "encoded_feature_names": X_test_processed.columns.tolist(),
+            "y_prob": np.asarray(trained["y_test_prob"], dtype=float),
+            "shap_values": shap_values,
+            "abs_by_original": abs_by_original,
+            "org_abs_shap": org_abs,
+        }
+
+    return outputs
+
+
+def run_phase1_rank_stability_and_delta_shap(
+    results_df: pd.DataFrame,
+    train_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    y_train: pd.Series,
+    feature_map: dict[str, list[str]],
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[int, dict[str, Any]]]:
+    outputs_a = retrain_best_models_for_feature_set(
+        results_df=results_df,
+        feature_set="A",
+        train_df=train_df,
+        test_df=test_df,
+        y_train=y_train,
+        feature_map=feature_map,
+    )
+    outputs_b = retrain_best_models_for_feature_set(
+        results_df=results_df,
+        feature_set="B",
+        train_df=train_df,
+        test_df=test_df,
+        y_train=y_train,
+        feature_map=feature_map,
+    )
+
+    common_seeds = sorted(set(outputs_a.keys()) & set(outputs_b.keys()))
+
+    rank_rows: list[dict[str, Any]] = []
+    pair_rows: list[dict[str, Any]] = []
+
+    for seed in common_seeds:
+        for feature_set, out in [("A", outputs_a[seed]), ("B", outputs_b[seed])]:
+            abs_by_original = out["abs_by_original"]
+            mean_abs = abs_by_original.mean(axis=0)
+            rank_series = mean_abs.rank(ascending=False, method="average")
+
+            for feat in mean_abs.index.tolist():
+                rank_rows.append(
+                    {
+                        "seed": seed,
+                        "run_id": out["run_id"],
+                        "feature_set": feature_set,
+                        "feature": feat,
+                        "group": map_feature_group(feat),
+                        "mean_abs_shap": float(mean_abs.loc[feat]),
+                        "rank": float(rank_series.loc[feat]),
+                    }
+                )
+
+        abs_a = outputs_a[seed]["abs_by_original"]
+        abs_b = outputs_b[seed]["abs_by_original"]
+        shared_features = [f for f in abs_a.columns if f in abs_b.columns]
+
+        for feat in shared_features:
+            vals_a = abs_a[feat].to_numpy(dtype=float)
+            vals_b = abs_b[feat].to_numpy(dtype=float)
+            n = min(len(vals_a), len(vals_b))
+            for idx in range(n):
+                pair_rows.append(
+                    {
+                        "seed": seed,
+                        "patient_index": idx,
+                        "feature": feat,
+                        "abs_shap_a": float(vals_a[idx]),
+                        "abs_shap_b": float(vals_b[idx]),
+                    }
+                )
+
+    rank_full = pd.DataFrame(rank_rows)
+
+    if rank_full.empty:
+        empty = pd.DataFrame()
+        empty.to_csv(PHASE1_RANK_FULL, index=False)
+        empty.to_csv(PHASE1_RANK_TOP15, index=False)
+        empty.to_csv(PHASE1_DELTA_SHAP, index=False)
+        return empty, empty, empty, outputs_b
+
+    rank_stats = (
+        rank_full.groupby(["feature_set", "feature", "group"], as_index=False)
+        .agg(
+            mean_rank=("rank", "mean"),
+            stability_index_rank_sd=("rank", "std"),
+            mean_abs_shap=("mean_abs_shap", "mean"),
+        )
+        .sort_values(["feature_set", "mean_rank", "mean_abs_shap"], ascending=[True, True, False])
+        .reset_index(drop=True)
+    )
+    rank_stats["stability_index_rank_sd"] = rank_stats["stability_index_rank_sd"].fillna(0.0)
+    rank_stats.to_csv(PHASE1_RANK_FULL, index=False)
+
+    top_a = rank_stats[rank_stats["feature_set"] == "A"].head(15).reset_index(drop=True)
+    top_b = rank_stats[rank_stats["feature_set"] == "B"].head(15).reset_index(drop=True)
+
+    n_rows = max(len(top_a), len(top_b))
+    top15_rows: list[dict[str, Any]] = []
+    for i in range(n_rows):
+        row: dict[str, Any] = {"position": i + 1}
+
+        if i < len(top_a):
+            row["model_a_feature"] = str(top_a.loc[i, "feature"])
+            row["model_a_group"] = str(top_a.loc[i, "group"])
+            row["model_a_mean_rank"] = float(top_a.loc[i, "mean_rank"])
+            row["model_a_stability_index"] = float(top_a.loc[i, "stability_index_rank_sd"])
+        else:
+            row["model_a_feature"] = ""
+            row["model_a_group"] = ""
+            row["model_a_mean_rank"] = float("nan")
+            row["model_a_stability_index"] = float("nan")
+
+        if i < len(top_b):
+            row["model_b_feature"] = str(top_b.loc[i, "feature"])
+            row["model_b_group"] = str(top_b.loc[i, "group"])
+            row["model_b_mean_rank"] = float(top_b.loc[i, "mean_rank"])
+            row["model_b_stability_index"] = float(top_b.loc[i, "stability_index_rank_sd"])
+        else:
+            row["model_b_feature"] = ""
+            row["model_b_group"] = ""
+            row["model_b_mean_rank"] = float("nan")
+            row["model_b_stability_index"] = float("nan")
+
+        top15_rows.append(row)
+
+    top15_comparison = pd.DataFrame(top15_rows)
+    top15_comparison.to_csv(PHASE1_RANK_TOP15, index=False)
+
+    pair_df = pd.DataFrame(pair_rows)
+    clinical_group_names = {
+        "Patient Demographics",
+        "Clinical Severity",
+        "Medical Procedures",
+        "Length of Stay",
+        "Temporal",
+    }
+
+    top5_clinical = (
+        rank_stats[
+            (rank_stats["feature_set"] == "A")
+            & (rank_stats["group"].isin(clinical_group_names))
+        ]
+        .sort_values(["mean_rank", "mean_abs_shap"], ascending=[True, False])
+        .head(5)["feature"]
+        .tolist()
+    )
+
+    delta_rows: list[dict[str, Any]] = []
+    for feat in top5_clinical:
+        feat_pairs = pair_df[pair_df["feature"] == feat].copy()
+        if feat_pairs.empty:
+            continue
+
+        a_vals = feat_pairs["abs_shap_a"].to_numpy(dtype=float)
+        b_vals = feat_pairs["abs_shap_b"].to_numpy(dtype=float)
+        stat, p_value = ttest_rel(a_vals, b_vals, nan_policy="omit")
+
+        delta_rows.append(
+            {
+                "feature": feat,
+                "group": map_feature_group(feat),
+                "n_pairs": int(len(feat_pairs)),
+                "mean_abs_shap_model_a": float(np.nanmean(a_vals)),
+                "mean_abs_shap_model_b": float(np.nanmean(b_vals)),
+                "mean_delta_b_minus_a": float(np.nanmean(b_vals - a_vals)),
+                "ttest_statistic": float(stat),
+                "p_value": float(p_value),
+                "significant_at_0_05": bool(np.isfinite(p_value) and p_value < 0.05),
+            }
+        )
+
+    delta_df = pd.DataFrame(delta_rows)
+    delta_df.to_csv(PHASE1_DELTA_SHAP, index=False)
+
+    return rank_full, top15_comparison, delta_df, outputs_b
+
+
+def run_phase2_ablation_wilcoxon(results_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    target_sets = ["A", "A_plus_staffing", "A_plus_environment", "B"]
+
+    best_rows: list[pd.DataFrame] = []
+    for feature_set in target_sets:
+        best = select_best_rows_per_seed(results_df, feature_set)
+        if best.empty:
+            continue
+        best = best.copy()
+        best["config_name"] = CONFIG_LABELS.get(feature_set, feature_set)
+        keep_cols = [
+            "run_id",
+            "seed",
+            "feature_set",
+            "config_name",
+            "algorithm",
+            "auc_roc",
+            "precision",
+            "recall",
+            "cv_auc_roc",
+        ]
+        best_rows.append(best[keep_cols])
+
+    if best_rows:
+        seed_best_df = pd.concat(best_rows, ignore_index=True)
+        seed_best_df = seed_best_df.sort_values(["seed", "feature_set"]).reset_index(drop=True)
+    else:
+        seed_best_df = pd.DataFrame(
+            columns=[
+                "run_id",
+                "seed",
+                "feature_set",
+                "config_name",
+                "algorithm",
+                "auc_roc",
+                "precision",
+                "recall",
+                "cv_auc_roc",
+            ]
+        )
+
+    seed_best_df.to_csv(PHASE2_SEED_BEST, index=False)
+
+    comparisons = [
+        ("A", "A_plus_staffing", "Config1_vs_Config2"),
+        ("A", "A_plus_environment", "Config1_vs_Config3"),
+        ("A", "B", "Config1_vs_Config4"),
+    ]
+
+    rows: list[dict[str, Any]] = []
+    for base_set, other_set, label in comparisons:
+        base = seed_best_df[seed_best_df["feature_set"] == base_set][["seed", "precision", "recall"]]
+        other = seed_best_df[seed_best_df["feature_set"] == other_set][["seed", "precision", "recall"]]
+        merged = base.merge(other, on="seed", suffixes=("_base", "_other"))
+
+        if merged.empty:
+            continue
+
+        for metric in ["precision", "recall"]:
+            diffs = (merged[f"{metric}_other"] - merged[f"{metric}_base"]).to_numpy(dtype=float)
+
+            if np.allclose(diffs, 0.0):
+                stat = 0.0
+                p_value = 1.0
+            else:
+                stat, p_value = wilcoxon(diffs)
+
+            interpretation = ""
+            mean_diff = float(np.mean(diffs))
+            if metric == "precision":
+                if mean_diff < 0:
+                    interpretation = "Precision dropped (suggests more false positives)."
+                elif mean_diff > 0:
+                    interpretation = "Precision improved (suggests fewer false positives)."
+                else:
+                    interpretation = "No precision shift."
+            else:
+                if mean_diff > 0:
+                    interpretation = "Recall improved (fewer false negatives)."
+                elif mean_diff < 0:
+                    interpretation = "Recall dropped (more false negatives)."
+                else:
+                    interpretation = "No recall shift."
+
+            rows.append(
+                {
+                    "comparison": label,
+                    "base_config": base_set,
+                    "other_config": other_set,
+                    "metric": metric,
+                    "n_pairs": int(len(diffs)),
+                    "base_mean": float(np.mean(merged[f"{metric}_base"])),
+                    "other_mean": float(np.mean(merged[f"{metric}_other"])),
+                    "mean_delta_other_minus_base": mean_diff,
+                    "median_delta_other_minus_base": float(np.median(diffs)),
+                    "wilcoxon_statistic": float(stat),
+                    "p_value": float(p_value),
+                    "significant_at_0_05": bool(np.isfinite(p_value) and p_value < 0.05),
+                    "interpretation": interpretation,
+                }
+            )
+
+    wilcoxon_df = pd.DataFrame(rows)
+    wilcoxon_df.to_csv(PHASE2_WILCOXON, index=False)
+    return seed_best_df, wilcoxon_df
+
+
+def run_phase3_confidence_and_threshold_analyses(
+    outputs_b: dict[int, dict[str, Any]],
+    y_test: np.ndarray,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    if not outputs_b:
+        empty = pd.DataFrame()
+        empty.to_csv(PHASE3_CONFIDENCE, index=False)
+        empty.to_csv(PHASE3_THRESHOLD_CURVE, index=False)
+        empty.to_csv(PHASE3_OPT_THRESHOLDS, index=False)
+        return empty, empty, empty
+
+    y_test_arr = np.asarray(y_test).astype(int)
+    seeds = sorted(outputs_b.keys())
+
+    pooled_rows: list[dict[str, Any]] = []
+    prob_stack: list[np.ndarray] = []
+
+    for seed in seeds:
+        out = outputs_b[seed]
+        prob = np.asarray(out["y_prob"], dtype=float)
+        org_abs = np.asarray(out["org_abs_shap"], dtype=float)
+        y_pred = (prob >= THRESHOLD).astype(int)
+
+        prob_stack.append(prob)
+
+        for idx in range(len(prob)):
+            p = float(prob[idx])
+            low_conf = 0.30 <= p <= 0.70
+            pooled_rows.append(
+                {
+                    "seed": seed,
+                    "patient_index": idx,
+                    "probability": p,
+                    "confidence_band": "Low-Confidence" if low_conf else "High-Confidence",
+                    "org_abs_shap": float(org_abs[idx]),
+                    "is_false_positive_at_0_5": bool((y_pred[idx] == 1) and (y_test_arr[idx] == 0)),
+                }
+            )
+
+    pooled_df = pd.DataFrame(pooled_rows)
+
+    low = pooled_df[pooled_df["confidence_band"] == "Low-Confidence"]["org_abs_shap"].to_numpy(dtype=float)
+    high = pooled_df[pooled_df["confidence_band"] == "High-Confidence"]["org_abs_shap"].to_numpy(dtype=float)
+
+    if len(low) > 0 and len(high) > 0:
+        mw_stat, mw_p = mannwhitneyu(low, high, alternative="two-sided")
+    else:
+        mw_stat, mw_p = float("nan"), float("nan")
+
+    confidence_summary = pd.DataFrame(
+        [
+            {
+                "low_conf_n": int(len(low)),
+                "high_conf_n": int(len(high)),
+                "low_conf_mean_org_abs_shap": float(np.nanmean(low)) if len(low) > 0 else float("nan"),
+                "high_conf_mean_org_abs_shap": float(np.nanmean(high)) if len(high) > 0 else float("nan"),
+                "low_conf_median_org_abs_shap": float(np.nanmedian(low)) if len(low) > 0 else float("nan"),
+                "high_conf_median_org_abs_shap": float(np.nanmedian(high)) if len(high) > 0 else float("nan"),
+                "mannwhitney_statistic": float(mw_stat),
+                "mannwhitney_p_value": float(mw_p),
+                "low_conf_false_positive_rate_at_0_5": float(
+                    pooled_df[pooled_df["confidence_band"] == "Low-Confidence"]["is_false_positive_at_0_5"].mean()
+                )
+                if len(low) > 0
+                else float("nan"),
+                "high_conf_false_positive_rate_at_0_5": float(
+                    pooled_df[pooled_df["confidence_band"] == "High-Confidence"]["is_false_positive_at_0_5"].mean()
+                )
+                if len(high) > 0
+                else float("nan"),
+            }
+        ]
+    )
+    confidence_summary.to_csv(PHASE3_CONFIDENCE, index=False)
+
+    mean_prob = np.mean(np.vstack(prob_stack), axis=0)
+
+    pr_precision, pr_recall, _ = precision_recall_curve(y_test_arr, mean_prob)
+    pr_auc = float(average_precision_score(y_test_arr, mean_prob))
+
+    plt.figure(figsize=(8, 6))
+    plt.plot(pr_recall, pr_precision, color="#2f6f9f", linewidth=2, label=f"Model B mean PR AUC={pr_auc:.3f}")
+    plt.xlabel("Recall")
+    plt.ylabel("Precision")
+    plt.title("Phase 3: Precision-Recall Curve (Model B)")
+    plt.legend(loc="best")
+    plt.tight_layout()
+    plt.savefig(FIG_PHASE3_PR_CURVE, dpi=150, bbox_inches="tight")
+    plt.close()
+
+    scenario_defs = [
+        ("Scenario_1_FN3_FP1", 3.0, 1.0),
+        ("Scenario_2_FN5_FP1", 5.0, 1.0),
+    ]
+    thresholds = np.round(np.arange(0.10, 0.901, 0.01), 2)
+
+    curve_rows: list[dict[str, Any]] = []
+    for scenario_name, w_fn, w_fp in scenario_defs:
+        for threshold in thresholds:
+            y_pred = (mean_prob >= threshold).astype(int)
+            tn, fp, fn, tp = confusion_matrix(y_test_arr, y_pred, labels=[0, 1]).ravel()
+
+            precision = float(tp / (tp + fp)) if (tp + fp) > 0 else 0.0
+            recall = float(tp / (tp + fn)) if (tp + fn) > 0 else 0.0
+            total_cost = float((w_fn * fn) + (w_fp * fp))
+
+            curve_rows.append(
+                {
+                    "scenario": scenario_name,
+                    "weight_fn": w_fn,
+                    "weight_fp": w_fp,
+                    "threshold": float(threshold),
+                    "true_negatives": int(tn),
+                    "false_positives": int(fp),
+                    "false_negatives": int(fn),
+                    "true_positives": int(tp),
+                    "precision": precision,
+                    "recall": recall,
+                    "total_cost": total_cost,
+                }
+            )
+
+    threshold_curve = pd.DataFrame(curve_rows)
+    threshold_curve.to_csv(PHASE3_THRESHOLD_CURVE, index=False)
+
+    opt_rows: list[pd.DataFrame] = []
+    for scenario_name, _, _ in scenario_defs:
+        work = threshold_curve[threshold_curve["scenario"] == scenario_name].copy()
+        if work.empty:
+            continue
+        best = (
+            work.sort_values(
+                ["total_cost", "false_negatives", "false_positives", "threshold"],
+                ascending=[True, True, True, True],
+            )
+            .head(1)
+            .copy()
+        )
+        opt_rows.append(best)
+
+    if opt_rows:
+        optimal_df = pd.concat(opt_rows, ignore_index=True)
+    else:
+        optimal_df = pd.DataFrame()
+
+    optimal_df.to_csv(PHASE3_OPT_THRESHOLDS, index=False)
+
+    if not optimal_df.empty:
+        fig, axes = plt.subplots(1, len(optimal_df), figsize=(6 * len(optimal_df), 5))
+        if len(optimal_df) == 1:
+            axes = [axes]
+
+        for ax, (_, row) in zip(axes, optimal_df.iterrows()):
+            t = float(row["threshold"])
+            y_pred = (mean_prob >= t).astype(int)
+            cm = confusion_matrix(y_test_arr, y_pred, labels=[0, 1])
+            sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", cbar=False, ax=ax)
+            ax.set_title(f"{row['scenario']}\nthreshold={t:.2f}")
+            ax.set_xlabel("Predicted Label")
+            ax.set_ylabel("True Label")
+            ax.set_xticklabels(["Non-infection", "Infection"])
+            ax.set_yticklabels(["Non-infection", "Infection"], rotation=0)
+
+        plt.tight_layout()
+        plt.savefig(FIG_PHASE3_CONFUSIONS, dpi=150, bbox_inches="tight")
+        plt.close()
+
+    return confidence_summary, threshold_curve, optimal_df
+
+
+def build_phase_analysis_report(
+    correlation_pairs: pd.DataFrame,
+    rank_top15: pd.DataFrame,
+    delta_shap: pd.DataFrame,
+    phase2_seed_best: pd.DataFrame,
+    phase2_wilcoxon: pd.DataFrame,
+    phase3_confidence: pd.DataFrame,
+    phase3_thresholds: pd.DataFrame,
+) -> str:
+    lines: list[str] = []
+    lines.append("# Phase 1-3 Analysis Report")
+    lines.append("")
+    lines.append("## Phase 1: Overshadowing Effect")
+    lines.append("")
+    lines.append("### Top 20 Clinical-Organizational Spearman Correlations")
+    lines.append(to_md_table(correlation_pairs.head(20)))
+    lines.append("")
+    lines.append("### SHAP Rank Stability (Top 15 Model A vs Model B)")
+    lines.append(to_md_table(rank_top15))
+    lines.append("")
+    lines.append("### Delta SHAP Paired t-tests (Top 5 Clinical Features)")
+    lines.append(to_md_table(delta_shap))
+    lines.append("")
+
+    lines.append("## Phase 2: Step-wise Ablation")
+    lines.append("")
+    lines.append("### Seed-level Best Metrics by Configuration")
+    lines.append(to_md_table(phase2_seed_best))
+    lines.append("")
+    lines.append("### Wilcoxon Comparisons (Precision / Recall)")
+    lines.append(to_md_table(phase2_wilcoxon))
+    lines.append("")
+
+    lines.append("## Phase 3: Confidence and Cost-Asymmetry")
+    lines.append("")
+    lines.append("### Confidence Segmentation (Organizational |SHAP|)")
+    lines.append(to_md_table(phase3_confidence))
+    lines.append("")
+    lines.append("### Optimal Cost-sensitive Thresholds")
+    lines.append(to_md_table(phase3_thresholds))
+    lines.append("")
+
+    lines.append("## Output Artifacts")
+    lines.append(f"- {PHASE1_SPEARMAN_MATRIX.name}")
+    lines.append(f"- {PHASE1_TOP20_CORR.name}")
+    lines.append(f"- {PHASE1_RANK_FULL.name}")
+    lines.append(f"- {PHASE1_RANK_TOP15.name}")
+    lines.append(f"- {PHASE1_DELTA_SHAP.name}")
+    lines.append(f"- {PHASE2_SEED_BEST.name}")
+    lines.append(f"- {PHASE2_WILCOXON.name}")
+    lines.append(f"- {PHASE3_CONFIDENCE.name}")
+    lines.append(f"- {PHASE3_THRESHOLD_CURVE.name}")
+    lines.append(f"- {PHASE3_OPT_THRESHOLDS.name}")
+    lines.append(f"- figures/{FIG_PHASE1_SPEARMAN.name}")
+    lines.append(f"- figures/{FIG_PHASE3_PR_CURVE.name}")
+    lines.append(f"- figures/{FIG_PHASE3_CONFUSIONS.name}")
+    lines.append("")
+
+    return "\n".join(lines) + "\n"
+
+
 def make_plots(results_df: pd.DataFrame, paired: pd.DataFrame, feat_stability: pd.DataFrame) -> None:
     # AUC distribution boxplot
     work = results_df.copy()
@@ -1017,14 +1810,15 @@ def build_summary_markdown(
     paper_table = pd.DataFrame(paper_rows)
 
     # Validation checks
-    expected_rows = (END_SEED - START_SEED + 1) * len(ALGORITHMS) * 2
+    n_feature_sets = int(results_df["feature_set"].nunique()) if not results_df.empty else 0
+    expected_rows = (END_SEED - START_SEED + 1) * len(ALGORITHMS) * n_feature_sets
     auc_sd_max = float(per_model_summary["auc_roc_sd"].max()) if not per_model_summary.empty else float("nan")
     group_sum_df = grp_stability.copy()
 
     checks = pd.DataFrame(
         [
             {
-                "check": "Exactly 160 rows in results CSV",
+                "check": "Expected rows in results CSV",
                 "status": "PASS" if len(results_df) == expected_rows else "FAIL",
                 "details": f"rows={len(results_df)}, expected={expected_rows}",
             },
@@ -1143,8 +1937,43 @@ def main() -> int:
         raise FileNotFoundError(f"Missing dataset: {INPUT_DATASET}")
 
     model_a_features, model_b_features = load_cleaned_feature_sets()
+    feature_configs = build_feature_configs(model_a_features, model_b_features)
+    feature_map = get_feature_map(feature_configs)
 
     df = pd.read_csv(INPUT_DATASET)
+
+    clinical_group_names = [
+        "Patient Demographics",
+        "Clinical Severity",
+        "Medical Procedures",
+        "Length of Stay",
+        "Temporal",
+    ]
+    org_group_names = ["Organizational Environment", "Organizational Staffing"]
+
+    clinical_features = ordered_unique(
+        [
+            feat
+            for group_name in clinical_group_names
+            for feat in sorted(FEATURE_GROUPS[group_name])
+            if feat in df.columns
+        ]
+    )
+    org_features = ordered_unique(
+        [
+            feat
+            for group_name in org_group_names
+            for feat in sorted(FEATURE_GROUPS[group_name])
+            if feat in df.columns
+        ]
+    )
+
+    _, phase1_pairs = run_phase1_clinical_org_correlation(
+        df=df,
+        clinical_features=clinical_features,
+        org_features=org_features,
+    )
+
     train_df = df[df["admission_year"].isin([2019, 2020])].copy().reset_index(drop=True)
     test_df = df[df["admission_year"] == 2021].copy().reset_index(drop=True)
 
@@ -1156,9 +1985,10 @@ def main() -> int:
     print(f"Train infection rate={y_train.mean() * 100:.2f}%, Test infection rate={y_test.mean() * 100:.2f}%")
 
     seeds = list(range(START_SEED, END_SEED + 1))
+    expected_per_seed = len(ALGORITHMS) * len(feature_configs)
 
     # Resume completed seeds from checkpoint.
-    rows = resume_checkpoint(seeds)
+    rows = resume_checkpoint(seeds, expected_per_seed=expected_per_seed)
     completed_seeds = set(pd.DataFrame(rows)["seed"].tolist()) if rows else set()
 
     for run_id, seed in enumerate(seeds, start=1):
@@ -1177,8 +2007,7 @@ def main() -> int:
             y_train=y_train,
             y_test=y_test,
             years_train=years_train,
-            model_a_features=model_a_features,
-            model_b_features=model_b_features,
+            feature_configs=feature_configs,
         )
 
         rows.extend(run_rows)
@@ -1186,12 +2015,13 @@ def main() -> int:
         print(f"[run={run_id} seed={seed}] Checkpoint saved ({len(rows)} rows).")
 
     results_df = pd.DataFrame(rows)
-    results_df = results_df.sort_values(["run_id", "feature_set", "algorithm"]).reset_index(drop=True)
+    results_df = results_df.sort_values(["run_id", "config_id", "algorithm"]).reset_index(drop=True)
     results_df.to_csv(OUTPUT_RESULTS, index=False)
 
-    if len(results_df) != len(seeds) * len(ALGORITHMS) * 2:
+    expected_rows = len(seeds) * expected_per_seed
+    if len(results_df) != expected_rows:
         raise RuntimeError(
-            f"Unexpected row count in results: {len(results_df)}; expected {len(seeds) * len(ALGORITHMS) * 2}."
+            f"Unexpected row count in results: {len(results_df)}; expected {expected_rows}."
         )
 
     per_model_summary, paired, algo_wins = summarize_results(results_df)
@@ -1210,7 +2040,7 @@ def main() -> int:
         train_df=train_df,
         test_df=test_df,
         y_train=y_train,
-        model_b_features=model_b_features,
+        model_b_features=feature_map["B"],
     )
 
     shap_out = feat_stability.copy()
@@ -1231,6 +2061,32 @@ def main() -> int:
     repeated_shap_stability = pd.concat([shap_out, grp_out], ignore_index=True)
     repeated_shap_stability.to_csv(OUTPUT_SHAP_STABILITY, index=False)
 
+    _, phase1_top15, phase1_delta_shap, outputs_b = run_phase1_rank_stability_and_delta_shap(
+        results_df=results_df,
+        train_df=train_df,
+        test_df=test_df,
+        y_train=y_train,
+        feature_map=feature_map,
+    )
+
+    phase2_seed_best, phase2_wilcoxon = run_phase2_ablation_wilcoxon(results_df)
+
+    phase3_confidence, _, phase3_opt_thresholds = run_phase3_confidence_and_threshold_analyses(
+        outputs_b=outputs_b,
+        y_test=y_test.to_numpy(),
+    )
+
+    phase_report_text = build_phase_analysis_report(
+        correlation_pairs=phase1_pairs,
+        rank_top15=phase1_top15,
+        delta_shap=phase1_delta_shap,
+        phase2_seed_best=phase2_seed_best,
+        phase2_wilcoxon=phase2_wilcoxon,
+        phase3_confidence=phase3_confidence,
+        phase3_thresholds=phase3_opt_thresholds,
+    )
+    PHASE_ANALYSIS_REPORT.write_text(phase_report_text, encoding="utf-8")
+
     make_plots(results_df, paired, feat_stability)
 
     summary_text = build_summary_markdown(
@@ -1247,9 +2103,13 @@ def main() -> int:
     print(f"Saved results: {OUTPUT_RESULTS}")
     print(f"Saved summary: {OUTPUT_SUMMARY}")
     print(f"Saved SHAP stability: {OUTPUT_SHAP_STABILITY}")
+    print(f"Saved phase report: {PHASE_ANALYSIS_REPORT}")
     print(f"Saved figure: {FIG_AUC_BOXPLOT}")
     print(f"Saved figure: {FIG_AUC_DIFF_HIST}")
     print(f"Saved figure: {FIG_SHAP_STABILITY}")
+    print(f"Saved figure: {FIG_PHASE1_SPEARMAN}")
+    print(f"Saved figure: {FIG_PHASE3_PR_CURVE}")
+    print(f"Saved figure: {FIG_PHASE3_CONFUSIONS}")
 
     return 0
 

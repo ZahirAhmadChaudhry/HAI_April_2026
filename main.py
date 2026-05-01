@@ -61,6 +61,11 @@ def configure_core_outputs(run_dir: Path, algorithms: list[str], seeds: list[int
     core.PHASE3_THRESHOLD_CURVE = results_dir / "phase3_threshold_cost_curve.csv"
     core.PHASE3_OPT_THRESHOLDS = results_dir / "phase3_optimal_thresholds.csv"
 
+    core.FEATURE_STABILITY_INDICES = results_dir / "feature_stability_indices.csv"
+    core.FEATURE_STABILITY_SUMMARY = results_dir / "feature_stability_summary.md"
+    core.FEATURE_SELECTION_RESULTS = results_dir / "feature_selection_results.csv"
+    core.FEATURE_SELECTION_SUMMARY = results_dir / "feature_selection_summary.md"
+
     core.FIG_AUC_BOXPLOT = figures_dir / "auc_distribution_boxplot.png"
     core.FIG_AUC_DIFF_HIST = figures_dir / "auc_difference_histogram.png"
     core.FIG_SHAP_STABILITY = figures_dir / "shap_stability_plot.png"
@@ -312,7 +317,7 @@ def run_post_analyses(
     repeated_shap_stability = pd.concat([shap_out, grp_out], ignore_index=True)
     repeated_shap_stability.to_csv(core.OUTPUT_SHAP_STABILITY, index=False)
 
-    _, phase1_top15, phase1_delta_shap, outputs_b = core.run_phase1_rank_stability_and_delta_shap(
+    _, phase1_top15, phase1_delta_shap, outputs_a, outputs_b = core.run_phase1_rank_stability_and_delta_shap(
         results_df=results_df,
         train_df=train_df,
         test_df=test_df,
@@ -327,6 +332,23 @@ def run_post_analyses(
         y_test=y_test.to_numpy(),
     )
 
+    k_values = [5, 10, 15]
+    stability_detail_a, stability_summary_a = core.compute_feature_stability_tables(outputs_a, "A", k_values)
+    stability_detail_b, stability_summary_b = core.compute_feature_stability_tables(outputs_b, "B", k_values)
+    stability_detail = pd.concat([stability_detail_a, stability_detail_b], ignore_index=True)
+    stability_summary = pd.concat([stability_summary_a, stability_summary_b], ignore_index=True)
+    core.write_feature_stability_outputs(stability_summary, stability_detail)
+
+    fs_results, fs_summary, fs_wilcoxon, fs_meta = core.run_feature_selection_experiment(
+        results_df=results_df,
+        train_df=train_df,
+        test_df=test_df,
+        y_train=y_train,
+        y_test=y_test,
+        feature_map=feature_map,
+    )
+    core.write_feature_selection_outputs(fs_results, fs_summary, fs_wilcoxon, fs_meta)
+
     core.make_plots(results_df, paired, feat_stability)
 
     summary_text = core.build_summary_markdown(
@@ -338,6 +360,17 @@ def run_post_analyses(
         grp_stability=grp_stability,
     )
     core.OUTPUT_SUMMARY.write_text(summary_text, encoding="utf-8")
+
+    core.append_markdown_section(
+        core.OUTPUT_SUMMARY,
+        "6. Feature Set Stability Indices",
+        core.build_feature_stability_appendix(stability_summary),
+    )
+    core.append_markdown_section(
+        core.OUTPUT_SUMMARY,
+        "7. Feature Selection Experiment",
+        core.build_feature_selection_appendix(fs_summary, fs_wilcoxon, fs_meta),
+    )
 
     phase_report_text = core.build_phase_analysis_report(
         correlation_pairs=phase1_pairs,

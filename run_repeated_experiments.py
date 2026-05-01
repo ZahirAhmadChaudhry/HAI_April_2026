@@ -5,6 +5,7 @@ import math
 import os
 import subprocess
 import warnings
+from itertools import combinations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,7 @@ from lightgbm import LGBMClassifier
 from scipy.stats import mannwhitneyu, spearmanr, ttest_1samp, ttest_rel, wilcoxon
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.feature_selection import RFECV, VarianceThreshold
 from sklearn.metrics import (
     accuracy_score,
     average_precision_score,
@@ -66,6 +68,11 @@ PHASE2_WILCOXON = RESULTS_DIR / "phase2_wilcoxon_comparisons.csv"
 PHASE3_CONFIDENCE = RESULTS_DIR / "phase3_confidence_org_shap_analysis.csv"
 PHASE3_THRESHOLD_CURVE = RESULTS_DIR / "phase3_threshold_cost_curve.csv"
 PHASE3_OPT_THRESHOLDS = RESULTS_DIR / "phase3_optimal_thresholds.csv"
+
+FEATURE_STABILITY_INDICES = RESULTS_DIR / "feature_stability_indices.csv"
+FEATURE_STABILITY_SUMMARY = RESULTS_DIR / "feature_stability_summary.md"
+FEATURE_SELECTION_RESULTS = RESULTS_DIR / "feature_selection_results.csv"
+FEATURE_SELECTION_SUMMARY = RESULTS_DIR / "feature_selection_summary.md"
 
 FIG_DIR = BASE_DIR / "figures"
 FIG_AUC_BOXPLOT = FIG_DIR / "auc_distribution_boxplot.png"
@@ -794,6 +801,213 @@ def aggregate_abs_shap_by_original_feature(
     return out
 
 
+def append_markdown_section(path: Path, title: str, body: str) -> None:
+    with path.open("a", encoding="utf-8") as f:
+        f.write(f"\n## {title}\n")
+        f.write(body)
+        if not body.endswith("\n"):
+            f.write("\n")
+
+
+def compute_nogueira_index(membership: np.ndarray, k: int, d: int) -> float:
+    if d <= 0:
+        return float("nan")
+    p = float(k) / float(d)
+    denom = p * (1.0 - p)
+    if denom == 0.0:
+        return float("nan")
+    col_var = membership.var(axis=0, ddof=0)
+    mean_var = float(np.mean(col_var))
+    return float(1.0 - (mean_var / denom))
+
+
+def compute_stability_indices(
+    top_k_sets_per_run: list[set[int]],
+    k: int,
+    d: int,
+) -> dict[str, float]:
+    if len(top_k_sets_per_run) < 2:
+        return {
+            "jaccard_mean": float("nan"),
+            "jaccard_sd": float("nan"),
+            "kuncheva_mean": float("nan"),
+            "kuncheva_sd": float("nan"),
+            "nogueira": float("nan"),
+        }
+
+    jaccard_vals: list[float] = []
+    kuncheva_vals: list[float] = []
+    expected = (k * k) / float(d) if d > 0 else float("nan")
+    denom = k - expected if np.isfinite(expected) else float("nan")
+
+    for a, b in combinations(top_k_sets_per_run, 2):
+        inter = len(a & b)
+        union = len(a | b)
+        jaccard_vals.append((inter / union) if union else 0.0)
+
+        if denom and denom != 0.0:
+            kuncheva_vals.append((inter - expected) / denom)
+        else:
+            kuncheva_vals.append(float("nan"))
+
+    membership = np.zeros((len(top_k_sets_per_run), d), dtype=float)
+    for row_idx, indices in enumerate(top_k_sets_per_run):
+        for col_idx in indices:
+            if 0 <= col_idx < d:
+                membership[row_idx, col_idx] = 1.0
+
+    nogueira = compute_nogueira_index(membership, k, d)
+
+    jaccard_mean = float(np.nanmean(jaccard_vals)) if jaccard_vals else float("nan")
+    jaccard_sd = float(np.nanstd(jaccard_vals, ddof=1)) if len(jaccard_vals) > 1 else 0.0
+    kuncheva_mean = float(np.nanmean(kuncheva_vals)) if kuncheva_vals else float("nan")
+    kuncheva_sd = float(np.nanstd(kuncheva_vals, ddof=1)) if len(kuncheva_vals) > 1 else 0.0
+
+    return {
+        "jaccard_mean": jaccard_mean,
+        "jaccard_sd": jaccard_sd,
+        "kuncheva_mean": kuncheva_mean,
+        "kuncheva_sd": kuncheva_sd,
+        "nogueira": nogueira,
+    }
+
+
+def build_topk_sets_from_outputs(
+    outputs: dict[int, dict[str, Any]],
+    k_values: list[int],
+) -> tuple[list[int], dict[int, list[set[int]]], int]:
+    seeds = sorted(outputs.keys())
+    if not seeds:
+        return [], {k: [] for k in k_values}, 0
+
+    first = outputs[seeds[0]]
+    feature_names = first.get("encoded_feature_names", [])
+    d = int(len(feature_names))
+
+    sets_by_k: dict[int, list[set[int]]] = {k: [] for k in k_values}
+
+    for seed in seeds:
+        out = outputs[seed]
+        shap_values = np.asarray(out.get("shap_values"))
+        local_d = len(out.get("encoded_feature_names", []))
+        if local_d != d:
+            print(f"[seed={seed}] Encoded feature count changed ({local_d} vs {d}). Using min.")
+            d = min(d, local_d)
+
+        mean_abs = np.abs(shap_values).mean(axis=0)
+        ranked_idx = np.argsort(-mean_abs)
+
+        for k in k_values:
+            k_eff = min(int(k), len(ranked_idx))
+            sets_by_k[k].append(set(int(i) for i in ranked_idx[:k_eff]))
+
+    return seeds, sets_by_k, d
+
+
+def compute_feature_stability_tables(
+    outputs: dict[int, dict[str, Any]],
+    model_label: str,
+    k_values: list[int],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    seeds, sets_by_k, d = build_topk_sets_from_outputs(outputs, k_values)
+    if not seeds:
+        return pd.DataFrame(), pd.DataFrame()
+
+    detail_rows: list[dict[str, Any]] = []
+    summary_rows: list[dict[str, Any]] = []
+
+    for k in k_values:
+        k_eff = min(int(k), int(d)) if d > 0 else int(k)
+        sets = sets_by_k.get(k, [])
+        pair_jaccard: list[float] = []
+        pair_kuncheva: list[float] = []
+
+        for (i_idx, j_idx) in combinations(range(len(seeds)), 2):
+            si = sets[i_idx]
+            sj = sets[j_idx]
+            inter = len(si & sj)
+            union = len(si | sj)
+            jaccard = (inter / union) if union else 0.0
+
+            expected = (k_eff * k_eff) / float(d) if d > 0 else float("nan")
+            denom = k_eff - expected if np.isfinite(expected) else float("nan")
+            if denom and denom != 0.0:
+                kuncheva = (inter - expected) / denom
+            else:
+                kuncheva = float("nan")
+
+            pair_jaccard.append(jaccard)
+            pair_kuncheva.append(kuncheva)
+
+            detail_rows.append(
+                {
+                    "model": model_label,
+                    "k": int(k),
+                    "run_i": int(seeds[i_idx]),
+                    "run_j": int(seeds[j_idx]),
+                    "jaccard": float(jaccard),
+                    "kuncheva": float(kuncheva),
+                    "nogueira_per_run": float("nan"),
+                }
+            )
+
+        indices = compute_stability_indices(sets, k_eff, d)
+        summary_rows.append(
+            {
+                "model": model_label,
+                "k": int(k),
+                "jaccard_mean": indices["jaccard_mean"],
+                "jaccard_sd": indices["jaccard_sd"],
+                "kuncheva_mean": indices["kuncheva_mean"],
+                "kuncheva_sd": indices["kuncheva_sd"],
+                "nogueira": indices["nogueira"],
+                "nogueira_sd": 0.0,
+                "n_pairs": int(len(pair_jaccard)),
+                "d": int(d),
+            }
+        )
+
+    detail_df = pd.DataFrame(detail_rows)
+    summary_df = pd.DataFrame(summary_rows)
+    return detail_df, summary_df
+
+
+def write_feature_stability_outputs(
+    summary_df: pd.DataFrame,
+    detail_df: pd.DataFrame,
+) -> None:
+    if detail_df.empty and summary_df.empty:
+        FEATURE_STABILITY_INDICES.write_text("", encoding="utf-8")
+        FEATURE_STABILITY_SUMMARY.write_text("_No stability results_\n", encoding="utf-8")
+        return
+
+    combined = pd.concat([detail_df, summary_df], ignore_index=True, sort=False)
+    combined.to_csv(FEATURE_STABILITY_INDICES, index=False)
+
+    sections: list[str] = []
+    for model_label in ["A", "B"]:
+        subset = summary_df[summary_df["model"] == model_label].copy()
+        if subset.empty:
+            continue
+        display = subset[
+            [
+                "k",
+                "jaccard_mean",
+                "jaccard_sd",
+                "kuncheva_mean",
+                "kuncheva_sd",
+                "nogueira",
+                "nogueira_sd",
+            ]
+        ].copy()
+        sections.append(f"## Model {model_label}\n" + to_md_table(display) + "\n")
+
+    if sections:
+        FEATURE_STABILITY_SUMMARY.write_text("\n".join(sections), encoding="utf-8")
+    else:
+        FEATURE_STABILITY_SUMMARY.write_text("_No stability results_\n", encoding="utf-8")
+
+
 def to_spearman_numeric(series: pd.Series) -> pd.Series:
     numeric = pd.to_numeric(series, errors="coerce")
     non_na_numeric = int(numeric.notna().sum())
@@ -1215,7 +1429,13 @@ def run_phase1_rank_stability_and_delta_shap(
     test_df: pd.DataFrame,
     y_train: pd.Series,
     feature_map: dict[str, list[str]],
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[int, dict[str, Any]]]:
+) -> tuple[
+    pd.DataFrame,
+    pd.DataFrame,
+    pd.DataFrame,
+    dict[int, dict[str, Any]],
+    dict[int, dict[str, Any]],
+]:
     outputs_a = retrain_best_models_for_feature_set(
         results_df=results_df,
         feature_set="A",
@@ -1283,7 +1503,7 @@ def run_phase1_rank_stability_and_delta_shap(
         empty.to_csv(PHASE1_RANK_FULL, index=False)
         empty.to_csv(PHASE1_RANK_TOP15, index=False)
         empty.to_csv(PHASE1_DELTA_SHAP, index=False)
-        return empty, empty, empty, outputs_b
+        return empty, empty, empty, outputs_a, outputs_b
 
     rank_stats = (
         rank_full.groupby(["feature_set", "feature", "group"], as_index=False)
@@ -1379,7 +1599,7 @@ def run_phase1_rank_stability_and_delta_shap(
     delta_df = pd.DataFrame(delta_rows)
     delta_df.to_csv(PHASE1_DELTA_SHAP, index=False)
 
-    return rank_full, top15_comparison, delta_df, outputs_b
+    return rank_full, top15_comparison, delta_df, outputs_a, outputs_b
 
 
 def run_phase2_ablation_wilcoxon(results_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -1487,6 +1707,414 @@ def run_phase2_ablation_wilcoxon(results_df: pd.DataFrame) -> tuple[pd.DataFrame
     wilcoxon_df = pd.DataFrame(rows)
     wilcoxon_df.to_csv(PHASE2_WILCOXON, index=False)
     return seed_best_df, wilcoxon_df
+
+
+def apply_variance_threshold(
+    X_train: pd.DataFrame,
+    X_test: pd.DataFrame,
+    threshold: float = 0.01,
+) -> tuple[pd.DataFrame, pd.DataFrame, list[str], int]:
+    selector = VarianceThreshold(threshold=threshold)
+    selector.fit(X_train)
+    mask = selector.get_support()
+
+    kept_features = X_train.columns[mask].tolist()
+    dropped = int(X_train.shape[1] - len(kept_features))
+
+    X_train_sel = X_train.loc[:, kept_features].copy()
+    X_test_sel = X_test.loc[:, kept_features].copy()
+    return X_train_sel, X_test_sel, kept_features, dropped
+
+
+def select_features_by_shap_threshold(
+    params: dict[str, Any],
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    seed: int,
+) -> list[str]:
+    model = make_model("random_forest", params, seed)
+    model.fit(X_train, y_train)
+    shap_values = compute_shap_values(model, X_train)
+    mean_abs = np.abs(shap_values).mean(axis=0)
+    threshold = float(np.mean(mean_abs)) if mean_abs.size else 0.0
+    mask = mean_abs >= threshold
+
+    if int(mask.sum()) == 0 and mean_abs.size > 0:
+        top_idx = int(np.argmax(mean_abs))
+        mask = np.zeros_like(mean_abs, dtype=bool)
+        mask[top_idx] = True
+
+    return X_train.columns[mask].tolist()
+
+
+def select_features_by_rfecv(
+    params: dict[str, Any],
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    seed: int,
+) -> tuple[list[str], dict[str, Any]]:
+    step = 1 if X_train.shape[1] <= 300 else 5
+    estimator = make_model("random_forest", params, seed)
+    selector = RFECV(
+        estimator=estimator,
+        step=step,
+        cv=5,
+        scoring="roc_auc",
+        n_jobs=NUM_THREADS,
+    )
+    selector.fit(X_train, y_train)
+    mask = selector.support_
+    selected = X_train.columns[mask].tolist()
+
+    if not selected:
+        fallback_idx = int(np.argmin(selector.ranking_)) if selector.ranking_.size else 0
+        selected = [X_train.columns[fallback_idx]]
+
+    meta = {
+        "rfecv_step": int(step),
+        "rfecv_n_features": int(len(selected)),
+    }
+    return selected, meta
+
+
+def train_final_model_from_preprocessed(
+    algorithm: str,
+    params: dict[str, Any],
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    X_test: pd.DataFrame,
+    seed: int,
+) -> dict[str, Any]:
+    y_train_int = y_train.astype(int)
+    smote = make_safe_smote(y_train_int, seed)
+
+    if smote is None:
+        X_res = X_train.copy()
+        y_res = y_train_int.copy()
+    else:
+        X_res, y_res = smote.fit_resample(X_train, y_train_int)
+        X_res = maybe_df(X_res, X_train.columns.tolist())
+
+    model = make_model(algorithm, params, seed)
+    model = fit_for_algorithm(algorithm, model, X_res, y_res)
+    y_prob = model.predict_proba(X_test)[:, 1]
+
+    return {
+        "model": model,
+        "y_test_prob": y_prob,
+    }
+
+
+def extract_params_by_seed(
+    results_df: pd.DataFrame,
+    feature_set: str,
+    algorithm: str,
+) -> dict[int, dict[str, Any]]:
+    subset = results_df[
+        (results_df["feature_set"] == feature_set)
+        & (results_df["algorithm"] == algorithm)
+    ].copy()
+    params_by_seed: dict[int, dict[str, Any]] = {}
+    for _, row in subset.iterrows():
+        seed = int(row["seed"])
+        params = json.loads(str(row["best_params_json"]))
+        params_by_seed[seed] = params
+    return params_by_seed
+
+
+def run_feature_selection_experiment(
+    results_df: pd.DataFrame,
+    train_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    y_train: pd.Series,
+    y_test: pd.Series,
+    feature_map: dict[str, list[str]],
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+    feature_cols = feature_map.get("B", [])
+    if not feature_cols:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), {}
+
+    bundle = fit_preprocessor(train_df, feature_cols)
+    X_train_all = transform_with_preprocessor(bundle, train_df)
+    X_test_all = transform_with_preprocessor(bundle, test_df)
+
+    params_by_seed = extract_params_by_seed(results_df, "B", "random_forest")
+    rows: list[dict[str, Any]] = []
+    errors: list[str] = []
+    rfecv_steps: list[int] = []
+
+    for seed in sorted(set(params_by_seed.keys())):
+        params = params_by_seed.get(seed)
+        if params is None:
+            errors.append(f"Missing params for seed {seed} (random_forest, Model B)")
+            continue
+
+        X_train_var, X_test_var, kept_features, dropped = apply_variance_threshold(
+            X_train_all,
+            X_test_all,
+            threshold=0.01,
+        )
+
+        baseline = train_final_model_from_preprocessed(
+            algorithm="random_forest",
+            params=params,
+            X_train=X_train_var,
+            y_train=y_train,
+            X_test=X_test_var,
+            seed=seed,
+        )
+        base_metrics = compute_metrics(y_test.to_numpy(), baseline["y_test_prob"])
+        rows.append(
+            {
+                "seed": seed,
+                "method": "no_selection",
+                "n_features_selected": int(len(kept_features)),
+                "auc_roc": base_metrics["auc_roc"],
+                "auc_pr": base_metrics["auc_pr"],
+                "precision": base_metrics["precision"],
+                "recall": base_metrics["recall"],
+                "f1": base_metrics["f1"],
+                "features_selected": "|".join(kept_features),
+                "variance_dropped": int(dropped),
+            }
+        )
+
+        shap_features = select_features_by_shap_threshold(params, X_train_var, y_train, seed)
+        X_train_shap = X_train_var.loc[:, shap_features]
+        X_test_shap = X_test_var.loc[:, shap_features]
+        shap_model = train_final_model_from_preprocessed(
+            algorithm="random_forest",
+            params=params,
+            X_train=X_train_shap,
+            y_train=y_train,
+            X_test=X_test_shap,
+            seed=seed,
+        )
+        shap_metrics = compute_metrics(y_test.to_numpy(), shap_model["y_test_prob"])
+        rows.append(
+            {
+                "seed": seed,
+                "method": "shap_threshold",
+                "n_features_selected": int(len(shap_features)),
+                "auc_roc": shap_metrics["auc_roc"],
+                "auc_pr": shap_metrics["auc_pr"],
+                "precision": shap_metrics["precision"],
+                "recall": shap_metrics["recall"],
+                "f1": shap_metrics["f1"],
+                "features_selected": "|".join(shap_features),
+                "variance_dropped": int(dropped),
+            }
+        )
+
+        rfecv_features, rfecv_meta = select_features_by_rfecv(params, X_train_var, y_train, seed)
+        rfecv_steps.append(int(rfecv_meta.get("rfecv_step", 1)))
+        X_train_rfecv = X_train_var.loc[:, rfecv_features]
+        X_test_rfecv = X_test_var.loc[:, rfecv_features]
+        rfecv_model = train_final_model_from_preprocessed(
+            algorithm="random_forest",
+            params=params,
+            X_train=X_train_rfecv,
+            y_train=y_train,
+            X_test=X_test_rfecv,
+            seed=seed,
+        )
+        rfecv_metrics = compute_metrics(y_test.to_numpy(), rfecv_model["y_test_prob"])
+        rows.append(
+            {
+                "seed": seed,
+                "method": "rfecv",
+                "n_features_selected": int(len(rfecv_features)),
+                "auc_roc": rfecv_metrics["auc_roc"],
+                "auc_pr": rfecv_metrics["auc_pr"],
+                "precision": rfecv_metrics["precision"],
+                "recall": rfecv_metrics["recall"],
+                "f1": rfecv_metrics["f1"],
+                "features_selected": "|".join(rfecv_features),
+                "variance_dropped": int(dropped),
+            }
+        )
+
+    results = pd.DataFrame(rows)
+    if results.empty:
+        return results, pd.DataFrame(), pd.DataFrame(), {"errors": errors}
+
+    summary_rows: list[dict[str, Any]] = []
+    for method, grp in results.groupby("method"):
+        row: dict[str, Any] = {"method": method}
+        for metric in ["auc_roc", "auc_pr", "precision", "recall", "f1"]:
+            vals = grp[metric].to_numpy(dtype=float)
+            row[f"{metric}_mean"] = float(np.mean(vals))
+            row[f"{metric}_sd"] = float(np.std(vals, ddof=1)) if len(vals) > 1 else 0.0
+        row["n_features_mean"] = float(np.mean(grp["n_features_selected"]))
+        row["n_features_sd"] = float(np.std(grp["n_features_selected"], ddof=1)) if len(grp) > 1 else 0.0
+        row["variance_dropped_mean"] = float(np.mean(grp["variance_dropped"]))
+        summary_rows.append(row)
+
+    summary_df = pd.DataFrame(summary_rows).sort_values("method")
+
+    wilcoxon_rows: list[dict[str, Any]] = []
+    for method in ["shap_threshold", "rfecv"]:
+        for metric in ["auc_roc", "precision", "recall", "f1"]:
+            base = results[results["method"] == "no_selection"].set_index("seed")
+            comp = results[results["method"] == method].set_index("seed")
+            joined = base[[metric]].join(comp[[metric]], lsuffix="_base", rsuffix="_comp", how="inner")
+
+            if joined.empty:
+                wilcoxon_rows.append(
+                    {
+                        "comparison": f"no_selection_vs_{method}",
+                        "metric": metric,
+                        "n_pairs": 0,
+                        "mean_delta": float("nan"),
+                        "statistic": float("nan"),
+                        "p_value": float("nan"),
+                    }
+                )
+                continue
+
+            deltas = joined[f"{metric}_comp"] - joined[f"{metric}_base"]
+            try:
+                stat, p_value = wilcoxon(deltas.to_numpy(dtype=float), alternative="two-sided")
+            except Exception:
+                stat, p_value = float("nan"), float("nan")
+
+            wilcoxon_rows.append(
+                {
+                    "comparison": f"no_selection_vs_{method}",
+                    "metric": metric,
+                    "n_pairs": int(len(joined)),
+                    "mean_delta": float(np.mean(deltas)),
+                    "statistic": float(stat),
+                    "p_value": float(p_value),
+                }
+            )
+
+    wilcoxon_df = pd.DataFrame(wilcoxon_rows)
+    meta = {
+        "errors": errors,
+        "rfecv_step_used": int(max(rfecv_steps)) if rfecv_steps else 1,
+    }
+    return results, summary_df, wilcoxon_df, meta
+
+
+def write_feature_selection_outputs(
+    results_df: pd.DataFrame,
+    summary_df: pd.DataFrame,
+    wilcoxon_df: pd.DataFrame,
+    meta: dict[str, Any],
+) -> None:
+    if results_df.empty:
+        FEATURE_SELECTION_RESULTS.write_text("", encoding="utf-8")
+        FEATURE_SELECTION_SUMMARY.write_text("_No feature selection results_\n", encoding="utf-8")
+        return
+
+    results_df.to_csv(FEATURE_SELECTION_RESULTS, index=False)
+
+    lines: list[str] = []
+    lines.append("# Feature Selection Summary")
+    lines.append("")
+    lines.append("## Method Metrics (mean, sd)")
+    metric_cols = [
+        "method",
+        "auc_roc_mean",
+        "auc_roc_sd",
+        "auc_pr_mean",
+        "auc_pr_sd",
+        "precision_mean",
+        "precision_sd",
+        "recall_mean",
+        "recall_sd",
+        "f1_mean",
+        "f1_sd",
+        "n_features_mean",
+        "n_features_sd",
+        "variance_dropped_mean",
+    ]
+    lines.append(to_md_table(summary_df[metric_cols]))
+    lines.append("")
+
+    lines.append("## Paired Wilcoxon Tests")
+    lines.append(to_md_table(wilcoxon_df))
+    lines.append("")
+
+    step_used = meta.get("rfecv_step_used")
+    if step_used is not None:
+        lines.append(f"- RFECV step used: {step_used}")
+    for err in meta.get("errors", []):
+        lines.append(f"- WARNING: {err}")
+    lines.append("")
+
+    FEATURE_SELECTION_SUMMARY.write_text("\n".join(lines), encoding="utf-8")
+
+
+def build_feature_stability_appendix(summary_df: pd.DataFrame) -> str:
+    if summary_df.empty:
+        return "_No stability results._\n"
+
+    lines: list[str] = []
+    for model_label in ["A", "B"]:
+        subset = summary_df[summary_df["model"] == model_label].copy()
+        if subset.empty:
+            continue
+        lines.append(f"### Model {model_label}")
+        display = subset[
+            [
+                "k",
+                "jaccard_mean",
+                "jaccard_sd",
+                "kuncheva_mean",
+                "kuncheva_sd",
+                "nogueira",
+                "nogueira_sd",
+            ]
+        ].copy()
+        lines.append(to_md_table(display))
+        lines.append("")
+
+    return "\n".join(lines).strip() + "\n"
+
+
+def build_feature_selection_appendix(
+    summary_df: pd.DataFrame,
+    wilcoxon_df: pd.DataFrame,
+    meta: dict[str, Any],
+) -> str:
+    if summary_df.empty:
+        return "_No feature selection results._\n"
+
+    lines: list[str] = []
+    lines.append("### Method Metrics (mean, sd)")
+    metric_cols = [
+        "method",
+        "auc_roc_mean",
+        "auc_roc_sd",
+        "auc_pr_mean",
+        "auc_pr_sd",
+        "precision_mean",
+        "precision_sd",
+        "recall_mean",
+        "recall_sd",
+        "f1_mean",
+        "f1_sd",
+        "n_features_mean",
+        "n_features_sd",
+        "variance_dropped_mean",
+    ]
+    lines.append(to_md_table(summary_df[metric_cols]))
+    lines.append("")
+
+    lines.append("### Paired Wilcoxon Tests")
+    lines.append(to_md_table(wilcoxon_df))
+    lines.append("")
+
+    step_used = meta.get("rfecv_step_used")
+    if step_used is not None:
+        lines.append(f"- RFECV step used: {step_used}")
+    for err in meta.get("errors", []):
+        lines.append(f"- WARNING: {err}")
+    lines.append("")
+
+    return "\n".join(lines)
 
 
 def run_phase3_confidence_and_threshold_analyses(
@@ -2061,7 +2689,7 @@ def main() -> int:
     repeated_shap_stability = pd.concat([shap_out, grp_out], ignore_index=True)
     repeated_shap_stability.to_csv(OUTPUT_SHAP_STABILITY, index=False)
 
-    _, phase1_top15, phase1_delta_shap, outputs_b = run_phase1_rank_stability_and_delta_shap(
+    _, phase1_top15, phase1_delta_shap, outputs_a, outputs_b = run_phase1_rank_stability_and_delta_shap(
         results_df=results_df,
         train_df=train_df,
         test_df=test_df,
@@ -2075,6 +2703,23 @@ def main() -> int:
         outputs_b=outputs_b,
         y_test=y_test.to_numpy(),
     )
+
+    k_values = [5, 10, 15]
+    stability_detail_a, stability_summary_a = compute_feature_stability_tables(outputs_a, "A", k_values)
+    stability_detail_b, stability_summary_b = compute_feature_stability_tables(outputs_b, "B", k_values)
+    stability_detail = pd.concat([stability_detail_a, stability_detail_b], ignore_index=True)
+    stability_summary = pd.concat([stability_summary_a, stability_summary_b], ignore_index=True)
+    write_feature_stability_outputs(stability_summary, stability_detail)
+
+    fs_results, fs_summary, fs_wilcoxon, fs_meta = run_feature_selection_experiment(
+        results_df=results_df,
+        train_df=train_df,
+        test_df=test_df,
+        y_train=y_train,
+        y_test=y_test,
+        feature_map=feature_map,
+    )
+    write_feature_selection_outputs(fs_results, fs_summary, fs_wilcoxon, fs_meta)
 
     phase_report_text = build_phase_analysis_report(
         correlation_pairs=phase1_pairs,
@@ -2098,6 +2743,17 @@ def main() -> int:
         grp_stability=grp_stability,
     )
     OUTPUT_SUMMARY.write_text(summary_text, encoding="utf-8")
+
+    append_markdown_section(
+        OUTPUT_SUMMARY,
+        "6. Feature Set Stability Indices",
+        build_feature_stability_appendix(stability_summary),
+    )
+    append_markdown_section(
+        OUTPUT_SUMMARY,
+        "7. Feature Selection Experiment",
+        build_feature_selection_appendix(fs_summary, fs_wilcoxon, fs_meta),
+    )
 
     print("=== Repeated experiment completed ===")
     print(f"Saved results: {OUTPUT_RESULTS}")
